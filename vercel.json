@@ -1,0 +1,16 @@
+{
+  "crons": [
+    {
+      "path": "/api/notifications?task=sunday_ops_review",
+      "schedule": "0 18 * * 0"
+    },
+    {
+      "path": "/api/notifications?task=daily_relationship_check",
+      "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/notifications?task=monthly_pattern_analysis",
+      "schedule": "0 18 1 * *"
+    }
+  ]
+}

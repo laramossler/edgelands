@@ -61,13 +61,13 @@ export async function POST(request: NextRequest) {
     if (conversationId) {
       await db.updateConversation(conversationId, updatedMessages, freshContext);
     } else {
-      const { data } = await db.saveConversation(userId, {
+      const result = await db.saveConversation(userId, {
         messages: updatedMessages,
         context_snapshot: freshContext,
       });
 
-      if (data && data.length > 0) {
-        finalConversationId = data[0].id;
+      if (result.data && result.data.length > 0) {
+        finalConversationId = result.data[0].id;
       }
     }
 

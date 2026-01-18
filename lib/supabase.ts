@@ -250,7 +250,7 @@ export const db = {
     return supabaseAdmin.from('conversations').insert({
       user_id: userId,
       ...data,
-    });
+    }).select();
   },
 
   async updateConversation(conversationId: string, messages: any[], contextSnapshot: any) {

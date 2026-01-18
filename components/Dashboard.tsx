@@ -87,7 +87,7 @@ export default function Dashboard() {
 
       {/* Current Week Energy */}
       <section className="space-y-4">
-        <h2 className="text-xl font-semibold text-foreground">This Week's Energy</h2>
+        <h2 className="text-xl font-semibold text-foreground">This Week&apos;s Energy</h2>
         {data?.weeklyEnergy ? (
           <>
             <EnergyChart

@@ -226,7 +226,7 @@ export const db = {
     return supabaseAdmin.from('integrations').insert({
       user_id: userId,
       ...data,
-    });
+    }).select();
   },
 
   // Relationship operations

@@ -11,6 +11,14 @@
     {
       "path": "/api/notifications?task=monthly_pattern_analysis",
       "schedule": "0 18 1 * *"
+    },
+    {
+      "path": "/api/correspondent/process",
+      "schedule": "0 10 * * *"
+    },
+    {
+      "path": "/api/correspondent/process?task=emergency_check",
+      "schedule": "0 */4 * * *"
     }
   ]
 }

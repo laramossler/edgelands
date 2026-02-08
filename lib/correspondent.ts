@@ -18,6 +18,7 @@ import {
   buildRelationshipContext,
   logInteraction,
 } from './people';
+import { recordFeedback, getRefinementsForDraft } from './feedback';
 import type {
   CorrespondentMessage,
   CorrespondentDraft,
@@ -274,6 +275,13 @@ async function draft(userId: string): Promise<number> {
     // Get thread context if this is part of a conversation
     const threadContext = await getThreadContext(userId, message.thread_id);
 
+    // Get learned style refinements from feedback loop
+    const refinements = await getRefinementsForDraft(
+      userId,
+      person?.circle || null,
+      person?.id || null
+    );
+
     // Generate draft
     const draftResult = await generateDraft(
       message,
@@ -281,7 +289,8 @@ async function draft(userId: string): Promise<number> {
       relationshipContext,
       voiceSamples,
       threadContext,
-      draftTier
+      draftTier,
+      refinements
     );
 
     if (draftResult) {
@@ -389,9 +398,10 @@ async function generateDraft(
   relationshipContext: string,
   voiceSamples: string[],
   threadContext: string,
-  draftTier: DraftTier
+  draftTier: DraftTier,
+  refinements: string[] = []
 ): Promise<DraftResult | null> {
-  const systemPrompt = buildDraftSystemPrompt(voiceSamples, draftTier);
+  const systemPrompt = buildDraftSystemPrompt(voiceSamples, draftTier, refinements);
 
   const userPrompt = buildDraftUserPrompt(
     message,
@@ -433,7 +443,7 @@ async function generateDraft(
   }
 }
 
-function buildDraftSystemPrompt(voiceSamples: string[], draftTier: DraftTier): string {
+function buildDraftSystemPrompt(voiceSamples: string[], draftTier: DraftTier, refinements: string[] = []): string {
   let prompt = `You are the Correspondent, a drafting agent that writes replies in the user's voice. You are NOT an AI assistant — you are ghostwriting as a specific person based on their writing patterns.
 
 Key principles:
@@ -448,6 +458,15 @@ Key principles:
     prompt += `\nThis is a QUICK REPLY — keep it to 1-3 sentences. Just acknowledge, confirm, or briefly respond.\n`;
   } else if (draftTier === 'full_draft') {
     prompt += `\nThis is a FULL DRAFT — write a complete, substantive reply that addresses all points in the original message.\n`;
+  }
+
+  // Include learned style refinements from the feedback loop
+  if (refinements.length > 0) {
+    prompt += `\nLEARNED STYLE RULES — the user has previously corrected drafts. Follow these rules strictly:\n`;
+    for (const r of refinements) {
+      prompt += `- ${r}\n`;
+    }
+    prompt += '\n';
   }
 
   if (voiceSamples.length > 0) {
@@ -609,6 +628,8 @@ export async function approveDraft(userId: string, draftId: string): Promise<boo
   // Future: SMS, Slack send implementations
 
   if (sent) {
+    const wasEdited = !!draft.edited_body;
+
     // Update draft status
     await supabaseAdmin
       .from('correspondent_drafts')
@@ -636,6 +657,14 @@ export async function approveDraft(userId: string, draftId: string): Promise<boo
       content: draft.edited_body || draft.body,
       sent_at: new Date().toISOString(),
     });
+
+    // Record feedback for the learning loop
+    await recordFeedback(
+      userId,
+      draft as unknown as CorrespondentDraft,
+      wasEdited ? 'sent_edited' : 'sent',
+      person
+    );
   }
 
   return sent;

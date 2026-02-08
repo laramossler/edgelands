@@ -19,12 +19,23 @@ interface ConfigData {
   emergency_alerts_enabled: boolean;
 }
 
+interface FeedbackMetrics {
+  total_drafts: number;
+  total_sent: number;
+  edit_rate: number;
+  avg_edit_ratio: number;
+  by_circle: Record<string, { sent: number; edited: number; edit_rate: number }>;
+  top_refinements: { refinement: string; confidence: number; times_confirmed: number; circle?: string }[];
+}
+
 export default function CorrespondentPage() {
   const [queue, setQueue] = useState<QueueData | null>(null);
   const [config, setConfig] = useState<ConfigData | null>(null);
+  const [metrics, setMetrics] = useState<FeedbackMetrics | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isProcessing, setIsProcessing] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
+  const [showMetrics, setShowMetrics] = useState(false);
 
   useEffect(() => {
     fetchData();
@@ -32,13 +43,15 @@ export default function CorrespondentPage() {
 
   const fetchData = async () => {
     try {
-      const [queueRes, configRes] = await Promise.all([
+      const [queueRes, configRes, metricsRes] = await Promise.all([
         fetch('/api/correspondent/queue'),
         fetch('/api/correspondent/config'),
+        fetch('/api/correspondent/queue?format=metrics'),
       ]);
 
       if (queueRes.ok) setQueue(await queueRes.json());
       if (configRes.ok) setConfig(await configRes.json());
+      if (metricsRes.ok) setMetrics(await metricsRes.json());
     } catch (error) {
       console.error('Failed to fetch correspondent data:', error);
     } finally {
@@ -57,13 +70,12 @@ export default function CorrespondentPage() {
       if (response.ok) {
         const result = await response.json();
         if (action === 'send' && result.success) {
-          setStatusMessage('Message sent.');
+          setStatusMessage('Message sent. Voice model updated.');
         } else if (action === 'skip') {
           setStatusMessage('Skipped — will return tomorrow.');
         } else if (action === 'defer') {
           setStatusMessage('Archived.');
         }
-        // Refresh queue
         await fetchData();
         setTimeout(() => setStatusMessage(''), 3000);
       }
@@ -106,6 +118,8 @@ export default function CorrespondentPage() {
       </div>
     );
   }
+
+  const editRatePct = metrics ? Math.round((1 - metrics.edit_rate) * 100) : null;
 
   return (
     <div className="max-w-3xl mx-auto p-8 space-y-8">
@@ -163,6 +177,12 @@ export default function CorrespondentPage() {
         >
           People Database
         </Link>
+        <button
+          onClick={() => setShowMetrics(!showMetrics)}
+          className="px-4 py-2 border border-muted/20 rounded text-sm text-muted hover:text-foreground transition-colors"
+        >
+          {showMetrics ? 'Hide' : 'Show'} Learning
+        </button>
         {queue?.last_run && (
           <span className="text-xs text-muted">
             Last run: {new Date(queue.last_run.completed_at || queue.last_run.started_at).toLocaleString()}
@@ -173,6 +193,88 @@ export default function CorrespondentPage() {
         )}
       </div>
 
+      {/* Learning Metrics Panel */}
+      {showMetrics && metrics && (
+        <section className="border border-muted/20 rounded-lg p-5 space-y-4">
+          <h2 className="text-sm font-medium text-foreground">Voice Model Learning</h2>
+
+          {/* Key metrics */}
+          <div className="grid grid-cols-4 gap-3 text-center text-sm">
+            <div className="border border-muted/10 rounded p-2">
+              <div className="text-foreground font-medium">{metrics.total_sent}</div>
+              <div className="text-muted text-xs">Sent</div>
+            </div>
+            <div className="border border-muted/10 rounded p-2">
+              <div className={`font-medium ${editRatePct && editRatePct >= 80 ? 'text-accent' : 'text-foreground'}`}>
+                {editRatePct !== null ? `${editRatePct}%` : '--'}
+              </div>
+              <div className="text-muted text-xs">Send rate</div>
+            </div>
+            <div className="border border-muted/10 rounded p-2">
+              <div className="text-foreground font-medium">
+                {Math.round((1 - metrics.avg_edit_ratio) * 100)}%
+              </div>
+              <div className="text-muted text-xs">Accuracy</div>
+            </div>
+            <div className="border border-muted/10 rounded p-2">
+              <div className="text-foreground font-medium">{metrics.top_refinements.length}</div>
+              <div className="text-muted text-xs">Rules learned</div>
+            </div>
+          </div>
+
+          {/* Send rate explanation */}
+          {editRatePct !== null && metrics.total_sent > 0 && (
+            <p className="text-xs text-muted">
+              {editRatePct >= 80
+                ? 'Correspondent is writing in your voice well. Edits are rare.'
+                : editRatePct >= 50
+                ? 'Learning your voice. Each edit teaches the system something new.'
+                : 'Still early days. Keep editing drafts — the system learns from every change.'}
+              {' '}Target: 80%+ send-without-edit rate.
+            </p>
+          )}
+
+          {/* Per-circle breakdown */}
+          {Object.keys(metrics.by_circle).length > 0 && (
+            <div className="space-y-1">
+              <div className="text-xs text-muted font-medium">By circle:</div>
+              {Object.entries(metrics.by_circle).map(([circle, data]) => (
+                <div key={circle} className="flex items-center justify-between text-xs">
+                  <span className="text-muted">{circle}</span>
+                  <span className="text-foreground">
+                    {Math.round((1 - data.edit_rate) * 100)}% accuracy ({data.sent} sent)
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Learned style rules */}
+          {metrics.top_refinements.length > 0 && (
+            <div className="space-y-1">
+              <div className="text-xs text-muted font-medium">Learned style rules:</div>
+              {metrics.top_refinements.slice(0, 5).map((ref, i) => (
+                <div key={i} className="flex items-start gap-2 text-xs">
+                  <span className="text-accent mt-0.5">
+                    {'*'.repeat(Math.ceil(ref.confidence * 3))}
+                  </span>
+                  <span className="text-foreground">{ref.refinement}</span>
+                  {ref.circle && (
+                    <span className="text-muted">({ref.circle})</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {metrics.total_sent === 0 && (
+            <p className="text-xs text-muted">
+              No messages sent yet. The system will start learning from your first edit.
+            </p>
+          )}
+        </section>
+      )}
+
       {/* Decision Queue */}
       <section>
         <CorrespondentQueue
@@ -181,7 +283,7 @@ export default function CorrespondentPage() {
         />
       </section>
 
-      {/* Stats */}
+      {/* Pipeline Stats */}
       {queue?.last_run && queue.last_run.status === 'completed' && (
         <div className="grid grid-cols-3 gap-4 text-center text-sm">
           <div className="border border-muted/20 rounded p-3">

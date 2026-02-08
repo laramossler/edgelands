@@ -135,7 +135,7 @@ export interface ChatResponse {
 }
 
 export interface Action {
-  type: 'log_energy' | 'update_project' | 'log_insight' | 'update_relationship' | 'set_non_negotiable';
+  type: 'log_energy' | 'update_project' | 'create_project' | 'log_insight' | 'update_relationship' | 'set_non_negotiable' | 'create_decision';
   data: any;
 }
 
@@ -170,6 +170,234 @@ export interface NotificationRequest {
 
 export interface NotificationResponse {
   sent: boolean;
+}
+
+// ============================================================
+// People Database Types
+// ============================================================
+
+export type Circle = 'family' | 'neighbor' | 'friend' | 'professional' | 'community' | 'acquaintance';
+export type IdealCadence = 'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'seasonal' | 'as_needed';
+export type InteractionType = 'email_sent' | 'email_received' | 'text' | 'call' | 'in_person' | 'letter' | 'gift';
+export type Sentiment = 'warm' | 'neutral' | 'tense' | 'celebratory' | 'supportive';
+
+export interface Person {
+  id: string;
+  user_id: string;
+
+  // Core Identity
+  name: string;
+  nickname?: string;
+  email?: string[];
+  phone?: string[];
+  address?: string;
+  photo?: string;
+
+  // Relationship Mapping
+  circle: Circle;
+  closeness: 1 | 2 | 3 | 4 | 5;
+  relationship: string;
+  how_we_met?: string;
+  shared_with?: string[];
+
+  // Care Practice
+  last_contact?: string;
+  contact_method?: string;
+  ideal_cadence?: IdealCadence;
+  next_touchpoint?: string;
+  touchpoint_date?: string;
+  care_notes?: string;
+
+  // Personal Context
+  birthday?: string;
+  location?: string;
+  occupation?: string;
+  interests?: string[];
+  dietary?: string;
+  communication_style?: string;
+  gift_ideas?: string[];
+  notes?: string;
+
+  created_at: string;
+  updated_at: string;
+}
+
+export interface InteractionLogEntry {
+  id: string;
+  user_id: string;
+  person_id: string;
+  date: string;
+  type: InteractionType;
+  summary?: string;
+  sentiment?: Sentiment;
+  auto_logged: boolean;
+  created_at: string;
+}
+
+// ============================================================
+// Correspondent Agent Types
+// ============================================================
+
+export type MessageChannel = 'email' | 'sms' | 'slack' | 'newsletter' | 'social';
+export type DraftTier = 'full_draft' | 'quick_reply' | 'batched_reply' | 'no_reply';
+export type DraftStatus = 'pending' | 'approved' | 'edited' | 'sent' | 'skipped' | 'deferred';
+export type RunStatus = 'running' | 'completed' | 'failed';
+
+export interface CorrespondentMessage {
+  id: string;
+  user_id: string;
+
+  // Source
+  channel: MessageChannel;
+  external_id?: string;
+  thread_id?: string;
+
+  // Sender
+  sender_email?: string;
+  sender_name?: string;
+  sender_phone?: string;
+  person_id?: string;
+
+  // Content
+  subject?: string;
+  body: string;
+  body_html?: string;
+  snippet?: string;
+  attachments?: { name: string; mime_type: string; size: number; storage_ref?: string }[];
+
+  // Metadata
+  received_at: string;
+  is_read: boolean;
+  labels?: string[];
+
+  // Processing
+  processed: boolean;
+  urgency: number;
+  importance: number;
+  triage_summary?: string;
+
+  created_at: string;
+}
+
+export interface CorrespondentDraft {
+  id: string;
+  user_id: string;
+  message_id: string;
+  person_id?: string;
+
+  // Draft content
+  channel: MessageChannel;
+  subject?: string;
+  body: string;
+  draft_tier: DraftTier;
+
+  // Context
+  relationship_context?: string;
+  thread_context?: string;
+  voice_notes?: string;
+
+  // Queue state
+  status: DraftStatus;
+  skip_count: number;
+  queue_position?: number;
+
+  // Triage
+  urgency: number;
+  importance: number;
+
+  // Editing
+  edited_body?: string;
+  sent_at?: string;
+
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CorrespondentRun {
+  id: string;
+  user_id: string;
+  started_at: string;
+  completed_at?: string;
+  status: RunStatus;
+  messages_ingested: number;
+  messages_processed: number;
+  drafts_generated: number;
+  error?: string;
+  created_at: string;
+}
+
+export interface VoiceSample {
+  id: string;
+  user_id: string;
+  person_id?: string;
+  circle?: string;
+  channel: string;
+  content: string;
+  sent_at?: string;
+  created_at: string;
+}
+
+export interface CorrespondentConfig {
+  user_id: string;
+
+  // Gmail
+  gmail_access_token?: string;
+  gmail_refresh_token?: string;
+  gmail_token_expiry?: string;
+  gmail_last_history_id?: string;
+  gmail_connected: boolean;
+
+  // Processing
+  process_time: string;
+  timezone: string;
+
+  // Alerts
+  emergency_alerts_enabled: boolean;
+  emergency_closeness_threshold: number;
+
+  // Exclusions
+  excluded_emails?: string[];
+  excluded_names?: string[];
+
+  created_at: string;
+  updated_at: string;
+}
+
+// Correspondent API Types
+
+export interface QueueItem {
+  draft: CorrespondentDraft;
+  message: CorrespondentMessage;
+  person?: Person;
+  context_summary: string;
+}
+
+export interface CorrespondentQueueResponse {
+  items: QueueItem[];
+  total: number;
+  pending: number;
+  last_run?: CorrespondentRun;
+}
+
+export interface DraftActionRequest {
+  draft_id: string;
+  action: 'send' | 'edit' | 'skip' | 'defer';
+  edited_body?: string;
+}
+
+export interface TriageResult {
+  urgency: number;
+  importance: number;
+  draft_tier: DraftTier;
+  summary: string;
+  reasoning: string;
+}
+
+export interface DraftResult {
+  body: string;
+  subject?: string;
+  voice_notes: string;
+  confidence: number;
 }
 
 // Pattern Detection Types

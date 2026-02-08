@@ -168,10 +168,22 @@ export default function Dashboard() {
       {/* Quick Actions */}
       <section className="flex gap-4">
         <Link
-          href="/chat"
+          href="/correspondent"
           className="flex-1 py-4 px-6 bg-accent text-background rounded-lg font-medium hover:bg-accent/90 transition-colors text-center"
         >
-          💬 Chat with Claude
+          Correspondent
+        </Link>
+        <Link
+          href="/people"
+          className="flex-1 py-4 px-6 border border-muted/20 text-foreground rounded-lg font-medium hover:bg-muted/5 transition-colors text-center"
+        >
+          People
+        </Link>
+        <Link
+          href="/chat"
+          className="flex-1 py-4 px-6 border border-muted/20 text-foreground rounded-lg font-medium hover:bg-muted/5 transition-colors text-center"
+        >
+          Chat
         </Link>
       </section>
     </div>

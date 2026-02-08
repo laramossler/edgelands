@@ -30,9 +30,13 @@ import type {
   VoiceSample,
 } from '@/types';
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY!,
-});
+let _anthropic: Anthropic | null = null;
+function getAnthropic() {
+  if (!_anthropic) {
+    _anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
+  }
+  return _anthropic;
+}
 
 // ============================================================
 // Stage 1: INGEST
@@ -151,7 +155,7 @@ async function triage(userId: string): Promise<void> {
 
     const triagePrompt = buildTriagePrompt(message, person);
 
-    const response = await anthropic.messages.create({
+    const response = await getAnthropic().messages.create({
       model: 'claude-3-5-haiku-20241022',
       max_tokens: 512,
       messages: [{ role: 'user', content: triagePrompt }],
@@ -414,7 +418,7 @@ async function generateDraft(
   const model = draftTier === 'full_draft' ? 'claude-3-5-sonnet-20241022' : 'claude-3-5-haiku-20241022';
   const maxTokens = draftTier === 'full_draft' ? 2048 : 512;
 
-  const response = await anthropic.messages.create({
+  const response = await getAnthropic().messages.create({
     model,
     max_tokens: maxTokens,
     system: systemPrompt,

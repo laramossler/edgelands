@@ -3,9 +3,13 @@ import { writeFile, unlink } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY!,
-});
+let _openai: OpenAI | null = null;
+function getOpenAI() {
+  if (!_openai) {
+    _openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
+  }
+  return _openai;
+}
 
 export async function transcribeAudio(audioBuffer: Buffer, filename: string): Promise<string> {
   // Write buffer to temporary file
@@ -18,7 +22,7 @@ export async function transcribeAudio(audioBuffer: Buffer, filename: string): Pr
     const file = await fetch(`file://${tempPath}`).then(res => res.blob()).then(blob => new File([blob], filename));
 
     // Transcribe with Whisper
-    const transcription = await openai.audio.transcriptions.create({
+    const transcription = await getOpenAI().audio.transcriptions.create({
       file: file as any,
       model: 'whisper-1',
       language: 'en',
@@ -38,7 +42,7 @@ export async function transcribeAudio(audioBuffer: Buffer, filename: string): Pr
 // Alternative implementation using fs.createReadStream for Node.js environments
 export async function transcribeAudioStream(audioPath: string): Promise<string> {
   const fs = await import('fs');
-  const transcription = await openai.audio.transcriptions.create({
+  const transcription = await getOpenAI().audio.transcriptions.create({
     file: fs.createReadStream(audioPath) as any,
     model: 'whisper-1',
     language: 'en',

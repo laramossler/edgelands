@@ -2,9 +2,13 @@ import Anthropic from '@anthropic-ai/sdk';
 import { getContextSnapshot } from './supabase';
 import type { ContextSnapshot, Message, Action, EnergyBreakdown } from '@/types';
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY!,
-});
+let _anthropic: Anthropic | null = null;
+function getAnthropic() {
+  if (!_anthropic) {
+    _anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
+  }
+  return _anthropic;
+}
 
 // Build system prompt with context
 function buildSystemPrompt(context: ContextSnapshot): string {
@@ -183,7 +187,7 @@ export async function chatWithClaude(
   ];
 
   // Call Claude API
-  const response = await anthropic.messages.create({
+  const response = await getAnthropic().messages.create({
     model: 'claude-3-5-sonnet-20241022',
     max_tokens: 4096,
     system: systemPrompt,
@@ -217,7 +221,7 @@ Respond with ONLY a JSON object in this exact format:
   "other_pct": 0
 }`;
 
-  const response = await anthropic.messages.create({
+  const response = await getAnthropic().messages.create({
     model: 'claude-3-5-haiku-20241022',
     max_tokens: 256,
     messages: [
@@ -259,7 +263,7 @@ Respond with ONLY a JSON object:
   "tags": ["tag1", "tag2"]
 }`;
 
-  const response = await anthropic.messages.create({
+  const response = await getAnthropic().messages.create({
     model: 'claude-3-5-haiku-20241022',
     max_tokens: 512,
     messages: [

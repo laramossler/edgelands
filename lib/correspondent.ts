@@ -85,6 +85,37 @@ async function ingest(userId: string): Promise<{ ingested: number; debug: string
 
       if (existing && existing.length > 0) continue;
 
+      // Add synthetic labels for triage signals
+      const labels = [...email.labels];
+      if (email.is_list_email) labels.push('_LIST');
+      if (email.is_reply) labels.push('_REPLY');
+      if (!email.is_list_email && email.recipient_count <= 2) labels.push('_DIRECT');
+      if (email.cc_recipients.length > 5) labels.push('_BULK_CC');
+
+      // Check if user previously sent in this thread (reply to user's own message)
+      if (email.thread_id) {
+        const { data: sentInThread } = await supabaseAdmin
+          .from('correspondent_drafts')
+          .select('id')
+          .eq('user_id', userId)
+          .eq('status', 'sent')
+          .limit(1);
+
+        if (sentInThread && sentInThread.length > 0) {
+          // Check if any of those drafts belong to a message in the same thread
+          const { data: threadMatch } = await supabaseAdmin
+            .from('correspondent_messages')
+            .select('id')
+            .eq('thread_id', email.thread_id)
+            .eq('user_id', userId)
+            .limit(1);
+
+          if (threadMatch && threadMatch.length > 0) {
+            labels.push('_USER_THREAD');
+          }
+        }
+      }
+
       const { error } = await supabaseAdmin.from('correspondent_messages').insert({
         user_id: userId,
         channel: 'email',
@@ -96,7 +127,7 @@ async function ingest(userId: string): Promise<{ ingested: number; debug: string
         body: email.body,
         body_html: email.body_html,
         snippet: email.snippet,
-        labels: email.labels,
+        labels,
         received_at: email.received_at,
         attachments: email.attachments.length > 0 ? email.attachments : null,
         processed: false,
@@ -206,15 +237,29 @@ async function triage(userId: string): Promise<void> {
 }
 
 function buildTriagePrompt(message: CorrespondentMessage, person: Person | null): string {
-  let prompt = `You are triaging an inbound message for the Correspondent agent. Score it on two axes:
+  const labels = message.labels || [];
+  const isDirect = labels.includes('_DIRECT');
+  const isReply = labels.includes('_REPLY');
+  const isUserThread = labels.includes('_USER_THREAD');
+  const isList = labels.includes('_LIST');
+  const isBulkCC = labels.includes('_BULK_CC');
+
+  let prompt = `You are triaging an inbound message for the Correspondent agent. The user values personal, relational correspondence highly — even from unknown senders. Score on two axes:
 - Urgency (0-10): Does this need a response soon? Look for deadlines, time-sensitive language, blocking decisions.
-- Importance (0-10): Does this matter? Consider relationship closeness, emotional content, financial/legal implications.
+- Importance (0-10): Does this matter? Consider: personal/emotional content, direct communication (not mass email), replies to conversations the user started, relationship depth, financial/legal implications.
+
+IMPORTANT scoring guidance:
+- A heartfelt personal email from anyone (known or unknown) should score HIGH importance (7-10)
+- A direct email to just the user (not a mailing list or mass CC) should get an importance boost
+- A reply to something the user previously sent should score HIGH importance (the person is responding to THEM)
+- Automated notifications, newsletters, marketing, and build alerts should score LOW (0-3)
+- Mass CC'd emails are lower importance unless the content specifically addresses the user
 
 Also determine the appropriate draft tier:
-- "full_draft": Substantive, personalized reply needed
+- "full_draft": Substantive, personalized reply needed (personal emails, important requests)
 - "quick_reply": Simple acknowledgment or short answer
 - "batched_reply": Similar to other messages (e.g., course inquiries)
-- "no_reply": Newsletters, automated notifications, marketing
+- "no_reply": Newsletters, automated notifications, marketing, build alerts
 
 Message details:
 Channel: ${message.channel}
@@ -223,6 +268,22 @@ Subject: ${message.subject || '(none)'}
 Snippet: ${message.snippet || message.body.substring(0, 300)}
 
 `;
+
+  // Add delivery context signals
+  const signals: string[] = [];
+  if (isDirect) signals.push('DIRECT EMAIL — sent specifically to the user (not a mass email or mailing list)');
+  if (isReply) signals.push('REPLY — this is a reply in a conversation thread');
+  if (isUserThread) signals.push('USER THREAD — the user has previously sent messages in this thread (someone is replying to them)');
+  if (isList) signals.push('MAILING LIST — sent via a mailing list or newsletter');
+  if (isBulkCC) signals.push('BULK CC — sent to many recipients');
+
+  if (signals.length > 0) {
+    prompt += `Delivery signals:\n`;
+    for (const s of signals) {
+      prompt += `- ${s}\n`;
+    }
+    prompt += '\n';
+  }
 
   if (person) {
     prompt += `Sender is known:
@@ -233,7 +294,7 @@ Snippet: ${message.snippet || message.body.substring(0, 300)}
 `;
     if (person.care_notes) prompt += `- Current context: ${person.care_notes}\n`;
   } else {
-    prompt += `Sender is NOT in the People Database (unknown contact).\n`;
+    prompt += `Sender is NOT yet in the People Database — but this does NOT mean they're unimportant. Judge by the content and delivery signals above.\n`;
   }
 
   prompt += `
@@ -349,15 +410,32 @@ async function draft(userId: string): Promise<number> {
 function determineDraftTier(message: any): DraftTier {
   const urgency = message.urgency || 0;
   const importance = message.importance || 0;
-  const combined = urgency + importance;
+  let combined = urgency + importance;
+
+  const labels = message.labels || [];
+
+  // Boost signals — direct emails and replies are more likely to need a response
+  const isDirect = labels.includes('_DIRECT');
+  const isReply = labels.includes('_REPLY');
+  const isUserThread = labels.includes('_USER_THREAD');
+  const isList = labels.includes('_LIST');
+
+  // Direct personal email gets a boost
+  if (isDirect && !isList) combined += 2;
+  // Reply to user's own thread gets a strong boost
+  if (isUserThread) combined += 3;
+  // Any reply gets a small boost
+  else if (isReply) combined += 1;
 
   // Check for no-reply signals
-  const labels = message.labels || [];
   const isAutomated = labels.includes('CATEGORY_UPDATES') ||
     labels.includes('CATEGORY_PROMOTIONS') ||
     labels.includes('CATEGORY_SOCIAL');
 
+  // Mailing lists and automated messages need higher bar
+  if (isList && combined < 10) return 'no_reply';
   if (isAutomated && combined < 8) return 'no_reply';
+
   if (combined >= 12) return 'full_draft';
   if (combined >= 6) return 'quick_reply';
   if (combined < 4) return 'no_reply';

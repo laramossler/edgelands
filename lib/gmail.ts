@@ -220,6 +220,22 @@ function parseSenderEmail(from: string): { name: string; email: string } {
   return { name: '', email: from.toLowerCase().trim() };
 }
 
+/** Parse a To/CC header into a list of email addresses */
+function parseRecipientList(header: string): string[] {
+  if (!header.trim()) return [];
+  // Split on commas, then extract email from each part
+  return header.split(',')
+    .map(part => {
+      const match = part.match(/<([^>]+@[^>]+)>/);
+      if (match) return match[1].toLowerCase().trim();
+      // Plain email without angle brackets
+      const plain = part.trim();
+      if (plain.includes('@')) return plain.toLowerCase();
+      return '';
+    })
+    .filter(Boolean);
+}
+
 // ============================================================
 // Public API
 // ============================================================
@@ -236,6 +252,12 @@ export interface IngestedEmail {
   labels: string[];
   received_at: string;
   attachments: { name: string; mime_type: string; size: number }[];
+  // Recipient and reply detection
+  to_recipients: string[];
+  cc_recipients: string[];
+  is_list_email: boolean;
+  is_reply: boolean;
+  recipient_count: number;
 }
 
 /** Fetch new emails since the given date (or last 24 hours) */
@@ -277,6 +299,21 @@ export async function fetchNewEmails(
       const { text, html } = extractBody(msg.payload);
       const attachments = extractAttachments(msg.payload);
 
+      // Extract recipient info for direct-email detection
+      const toHeader = getHeader(headers, 'To') || '';
+      const ccHeader = getHeader(headers, 'Cc') || '';
+      const toRecipients = parseRecipientList(toHeader);
+      const ccRecipients = parseRecipientList(ccHeader);
+
+      // Detect mailing lists (List-Unsubscribe header is the strongest signal)
+      const hasListUnsubscribe = !!getHeader(headers, 'List-Unsubscribe');
+      const hasListId = !!getHeader(headers, 'List-Id');
+      const hasPrecedenceBulk = (getHeader(headers, 'Precedence') || '').toLowerCase() === 'bulk';
+      const isListEmail = hasListUnsubscribe || hasListId || hasPrecedenceBulk;
+
+      // Detect replies (In-Reply-To header means this is a reply to something)
+      const isReply = !!getHeader(headers, 'In-Reply-To');
+
       emails.push({
         external_id: msg.id,
         thread_id: msg.threadId,
@@ -289,6 +326,11 @@ export async function fetchNewEmails(
         labels: msg.labelIds || [],
         received_at: new Date(parseInt(msg.internalDate)).toISOString(),
         attachments,
+        to_recipients: toRecipients,
+        cc_recipients: ccRecipients,
+        is_list_email: isListEmail,
+        is_reply: isReply,
+        recipient_count: toRecipients.length + ccRecipients.length,
       });
     }
   }

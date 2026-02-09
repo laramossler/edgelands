@@ -400,6 +400,233 @@ export interface DraftResult {
   confidence: number;
 }
 
+// ============================================================
+// Envoy Agent Types
+// ============================================================
+
+export type EnvoyPipeline = 'design_partner' | 'builder' | 'creative' | 'generous';
+export type OutreachStatus = 'suggested' | 'approved' | 'sent' | 'responded' | 'skipped' | 'deferred' | 'not_now';
+export type CoffeeChatStatus = 'suggested' | 'outreach_pending' | 'scheduled' | 'completed' | 'cancelled';
+export type OutreachChannel = 'email' | 'intro_request' | 'dm' | 'in_person_followup' | 'handwritten';
+
+export interface EnvoyCandidate {
+  id: string;
+  user_id: string;
+
+  // Identity
+  name: string;
+  email?: string;
+  role?: string;
+  organization?: string;
+  location?: string;
+
+  // Pipeline & source
+  pipeline: EnvoyPipeline;
+  source_pool: string; // e.g., "airbnb_network", "newsletter_ecosystem", "gorge_community"
+  source_detail?: string; // how they were identified
+
+  // Connection context
+  person_id?: string; // link to People Database if already known
+  mutual_connections?: string[]; // names of shared contacts
+  shared_interests?: string[];
+  their_work?: string; // what they're building/doing
+  why_reach_out?: string; // the genuine reason for connection
+  what_you_can_offer?: string; // lead with generosity
+
+  // Warm path
+  warm_path?: string; // description of warm intro route
+  warm_intro_through?: string; // person_id of mutual connection
+
+  // State
+  status: OutreachStatus;
+  priority: number; // 1-5, higher = more important
+  outreach_count: number;
+  last_outreach_at?: string;
+  last_response_at?: string;
+  follow_up_after?: string; // date to follow up
+  notes?: string;
+
+  // Exclusion
+  excluded: boolean;
+  excluded_reason?: string;
+
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EnvoyOutreach {
+  id: string;
+  user_id: string;
+  candidate_id: string;
+  person_id?: string;
+
+  // Content
+  channel: OutreachChannel;
+  subject?: string;
+  body: string;
+  pipeline: EnvoyPipeline;
+
+  // Context used for generation
+  candidate_context?: string;
+  relationship_context?: string;
+  voice_notes?: string;
+
+  // Queue state
+  status: OutreachStatus;
+  queue_position?: number;
+
+  // Editing
+  edited_body?: string;
+  sent_at?: string;
+  response_received_at?: string;
+
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EnvoyCoffeeChat {
+  id: string;
+  user_id: string;
+  candidate_id?: string;
+  person_id?: string;
+
+  // Participant
+  participant_name: string;
+  participant_role?: string;
+  participant_org?: string;
+
+  // Pipeline & context
+  pipeline: EnvoyPipeline;
+  why_now?: string;
+  suggested_topics?: string[];
+  your_ask?: string;
+
+  // Brief
+  brief?: string; // pre-chat context summary
+  last_contact_summary?: string;
+
+  // Scheduling
+  status: CoffeeChatStatus;
+  suggested_for_week?: string; // ISO date of week start
+  scheduled_at?: string;
+  completed_at?: string;
+
+  // Follow-up
+  follow_up_drafted: boolean;
+  follow_up_notes?: string;
+
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EnvoyNewsletterMetrics {
+  id: string;
+  user_id: string;
+  recorded_at: string;
+
+  // Growth
+  subscriber_count: number;
+  weekly_growth: number;
+  growth_rate: number;
+
+  // Engagement
+  open_rate?: number;
+  reply_rate?: number;
+
+  // Source tracking
+  source_breakdown?: Record<string, number>; // pipeline -> count
+  top_referrers?: string[];
+
+  created_at: string;
+}
+
+export interface EnvoyConfig {
+  user_id: string;
+
+  // Pipeline settings
+  design_partner_weekly_target: number; // default 3
+  builder_weekly_target: number; // default 2
+  creative_weekly_target: number; // default 1
+  generous_weekly_target: number; // default 2
+
+  // Coffee chat settings
+  weekly_coffee_chat_target: number; // default 2
+  coffee_chat_day_preferences?: string[]; // e.g., ["tuesday", "thursday"]
+
+  // Newsletter growth
+  daily_invite_target: number; // default 1
+  monthly_cross_promo_target: number; // default 3
+
+  // Follow-up
+  follow_up_days: number; // days before follow-up, default 7
+  max_follow_ups: number; // max outreach attempts, default 2
+
+  // Exclusions
+  excluded_people?: string[]; // person_ids to never contact
+
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EnvoyRun {
+  id: string;
+  user_id: string;
+  started_at: string;
+  completed_at?: string;
+  status: RunStatus;
+  candidates_identified: number;
+  outreach_drafted: number;
+  coffee_chats_suggested: number;
+  follow_ups_queued: number;
+  error?: string;
+  created_at: string;
+}
+
+// Envoy API types
+
+export interface EnvoyOutreachQueueItem {
+  outreach: EnvoyOutreach;
+  candidate: EnvoyCandidate;
+  person?: Person;
+}
+
+export interface EnvoyOutreachQueueResponse {
+  items: EnvoyOutreachQueueItem[];
+  total: number;
+  pending: number;
+  by_pipeline: Record<EnvoyPipeline, number>;
+  last_run?: EnvoyRun;
+}
+
+export interface EnvoyOutreachActionRequest {
+  outreach_id: string;
+  action: 'send' | 'edit' | 'skip' | 'defer';
+  edited_body?: string;
+}
+
+export interface EnvoyCoffeeChatSuggestion {
+  chat: EnvoyCoffeeChat;
+  candidate?: EnvoyCandidate;
+  person?: Person;
+  outreach_draft?: string;
+}
+
+export interface EnvoyWeeklyReport {
+  week_start: string;
+  outreach_sent: number;
+  outreach_responded: number;
+  response_rate: number;
+  coffee_chats_completed: number;
+  newsletter_growth: number;
+  by_pipeline: Record<EnvoyPipeline, {
+    outreach_sent: number;
+    responses: number;
+    active_conversations: number;
+  }>;
+  suggested_outreach: EnvoyOutreachQueueItem[];
+  suggested_coffee_chats: EnvoyCoffeeChatSuggestion[];
+}
+
 // Pattern Detection Types
 export interface MonthlyPattern {
   energyTrends: {

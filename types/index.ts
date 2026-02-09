@@ -381,7 +381,7 @@ export interface CorrespondentQueueResponse {
 
 export interface DraftActionRequest {
   draft_id: string;
-  action: 'send' | 'edit' | 'skip' | 'defer';
+  action: 'send' | 'edit' | 'skip' | 'defer' | 'mute_sender' | 'not_important';
   edited_body?: string;
 }
 

@@ -83,12 +83,17 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
 
     // Validate required fields
-    if (!body.name || !body.circle || !body.closeness || !body.relationship) {
+    if (!body.name) {
       return NextResponse.json(
-        { error: 'name, circle, closeness, and relationship are required' },
+        { error: 'name is required' },
         { status: 400 }
       );
     }
+
+    // Set defaults for quick-add from correspondent queue
+    if (!body.circle) body.circle = 'acquaintance';
+    if (!body.closeness_rating && !body.closeness) body.closeness_rating = 3;
+    if (!body.relationship) body.relationship = 'contact';
 
     const person = await createPerson(userId, body);
 

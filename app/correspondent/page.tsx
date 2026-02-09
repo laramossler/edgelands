@@ -101,7 +101,7 @@ function CorrespondentPageInner() {
     }
   };
 
-  const handleAction = async (draftId: string, action: 'send' | 'edit' | 'skip' | 'defer', editedBody?: string) => {
+  const handleAction = async (draftId: string, action: 'send' | 'edit' | 'skip' | 'defer' | 'mute_sender' | 'not_important', editedBody?: string) => {
     try {
       const response = await fetch('/api/correspondent/action', {
         method: 'POST',

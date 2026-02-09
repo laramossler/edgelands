@@ -42,6 +42,35 @@ function getAnthropic() {
 // Stage 1: INGEST
 // ============================================================
 
+/** Detect no-reply / automated sender patterns */
+function isAutomatedSender(email: string): boolean {
+  if (!email) return false;
+  const lower = email.toLowerCase();
+  const noReplyPatterns = [
+    'noreply@', 'no-reply@', 'donotreply@', 'do-not-reply@',
+    'notifications@', 'notification@', 'notify@',
+    'newsletter@', 'news@', 'updates@', 'update@',
+    'marketing@', 'promo@', 'promotions@',
+    'mailer@', 'mailer-daemon@', 'postmaster@',
+    'support@', 'billing@', 'receipts@', 'receipt@',
+    'hello@', 'info@',
+  ];
+  if (noReplyPatterns.some(p => lower.startsWith(p))) return true;
+
+  // Common automated domains
+  const autoDomains = [
+    'vercel.com', 'github.com', 'gitlab.com', 'bitbucket.org',
+    'netlify.com', 'heroku.com', 'aws.amazon.com',
+    'googleusercontent.com', 'mail.google.com',
+    'facebookmail.com', 'linkedin.com',
+    'shopify.com', 'stripe.com', 'paypal.com',
+  ];
+  const domain = lower.split('@')[1];
+  if (domain && autoDomains.some(d => domain.endsWith(d))) return true;
+
+  return false;
+}
+
 /** Pull all new messages from connected channels and store them */
 async function ingest(userId: string): Promise<{ ingested: number; debug: string }> {
   let ingested = 0;
@@ -87,9 +116,10 @@ async function ingest(userId: string): Promise<{ ingested: number; debug: string
 
       // Add synthetic labels for triage signals
       const labels = [...email.labels];
-      if (email.is_list_email) labels.push('_LIST');
+      const senderIsAutomated = isAutomatedSender(email.sender_email);
+      if (email.is_list_email || senderIsAutomated) labels.push('_LIST');
       if (email.is_reply) labels.push('_REPLY');
-      if (!email.is_list_email && email.recipient_count <= 2) labels.push('_DIRECT');
+      if (!email.is_list_email && !senderIsAutomated && email.recipient_count <= 2) labels.push('_DIRECT');
       if (email.cc_recipients.length > 5) labels.push('_BULK_CC');
 
       // Check if user previously sent in this thread (reply to user's own message)
@@ -834,11 +864,99 @@ async function requeueSkipped(userId: string): Promise<void> {
 }
 
 // ============================================================
+// REPROCESS (retroactively fix labels and re-triage)
+// ============================================================
+
+/** Retroactively add synthetic labels to existing messages and re-triage them */
+async function reprocessExisting(userId: string): Promise<number> {
+  // Get ALL messages for this user
+  const { data: messages } = await supabaseAdmin
+    .from('correspondent_messages')
+    .select('id, sender_email, labels, thread_id')
+    .eq('user_id', userId);
+
+  if (!messages || messages.length === 0) return 0;
+
+  let updated = 0;
+
+  for (const msg of messages) {
+    const existingLabels: string[] = msg.labels || [];
+
+    // Skip if already has synthetic labels (already processed with new logic)
+    if (existingLabels.some(l => l.startsWith('_'))) continue;
+
+    const labels = [...existingLabels];
+    const senderIsAutomated = isAutomatedSender(msg.sender_email || '');
+    const isGmailAutomated = labels.includes('CATEGORY_UPDATES') ||
+      labels.includes('CATEGORY_PROMOTIONS') ||
+      labels.includes('CATEGORY_SOCIAL');
+
+    // Infer list/direct from what we know
+    if (senderIsAutomated || isGmailAutomated) {
+      labels.push('_LIST');
+    } else {
+      // Without recipient headers, assume direct if not automated
+      labels.push('_DIRECT');
+    }
+
+    // Check for reply signals — subject starting with Re:
+    const { data: msgFull } = await supabaseAdmin
+      .from('correspondent_messages')
+      .select('subject')
+      .eq('id', msg.id)
+      .maybeSingle();
+
+    if (msgFull?.subject && /^(re|fwd|fw):/i.test(msgFull.subject)) {
+      labels.push('_REPLY');
+    }
+
+    // Check if user has sent in this thread
+    if (msg.thread_id) {
+      const { data: threadMsgs } = await supabaseAdmin
+        .from('correspondent_messages')
+        .select('id')
+        .eq('thread_id', msg.thread_id)
+        .eq('user_id', userId)
+        .neq('id', msg.id)
+        .limit(1);
+
+      if (threadMsgs && threadMsgs.length > 0) {
+        labels.push('_USER_THREAD');
+      }
+    }
+
+    // Update labels and reset processing
+    await supabaseAdmin
+      .from('correspondent_messages')
+      .update({
+        labels,
+        processed: false,
+        urgency: 0,
+        importance: 0,
+        triage_summary: null,
+      })
+      .eq('id', msg.id);
+
+    // Delete any existing drafts for this message
+    await supabaseAdmin
+      .from('correspondent_drafts')
+      .delete()
+      .eq('message_id', msg.id)
+      .eq('user_id', userId)
+      .in('status', ['pending', 'deferred', 'skipped']);
+
+    updated++;
+  }
+
+  return updated;
+}
+
+// ============================================================
 // MAIN PIPELINE
 // ============================================================
 
 /** Run the full Correspondent processing pipeline */
-export async function runPipeline(userId: string): Promise<CorrespondentRun> {
+export async function runPipeline(userId: string, reprocess = false): Promise<CorrespondentRun> {
   // Create run record
   const { data: run } = await supabaseAdmin
     .from('correspondent_runs')
@@ -855,6 +973,12 @@ export async function runPipeline(userId: string): Promise<CorrespondentRun> {
   try {
     // Re-queue any skipped drafts from yesterday
     await requeueSkipped(userId);
+
+    // Reprocess existing messages if requested (retroactive label fix)
+    if (reprocess) {
+      const reprocessed = await reprocessExisting(userId);
+      console.log(`[Correspondent] Reprocessed ${reprocessed} existing messages with new triage signals`);
+    }
 
     // Stage 1: Ingest
     const ingestResult = await ingest(userId);

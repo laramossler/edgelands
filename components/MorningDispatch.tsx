@@ -124,8 +124,11 @@ export default function MorningDispatch({ justConnected }: MorningDispatchProps)
   };
 
   const [pipelineStage, setPipelineStage] = useState('');
+  const [reprocessFlag, setReprocessFlag] = useState(false);
 
-  const runPipeline = async () => {
+  const runPipeline = async (forceReprocess = false) => {
+    const shouldReprocess = forceReprocess || reprocessFlag;
+    setReprocessFlag(false);
     setIsProcessing(true);
     setStatusMessage('');
     setPipelineStage('Connecting to Gmail...');
@@ -145,13 +148,19 @@ export default function MorningDispatch({ justConnected }: MorningDispatchProps)
     );
 
     try {
-      const response = await fetch('/api/correspondent/process', { method: 'POST' });
+      const response = await fetch('/api/correspondent/process', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reprocess: shouldReprocess }),
+      });
       timers.forEach(clearTimeout);
       setPipelineStage('');
 
       if (response.ok) {
         const result = await response.json();
-        if (result.messages_ingested > 0) {
+        if (result.reprocessed) {
+          setStatusMessage(`Re-triaged all messages with improved scoring. ${result.drafts_generated} draft${result.drafts_generated !== 1 ? 's' : ''} prepared.`);
+        } else if (result.messages_ingested > 0) {
           setStatusMessage(`${result.messages_ingested} new message${result.messages_ingested !== 1 ? 's' : ''} found, ${result.drafts_generated} draft${result.drafts_generated !== 1 ? 's' : ''} prepared.`);
         } else {
           const debugMsg = result.debug ? ` (${result.debug})` : '';
@@ -239,8 +248,11 @@ export default function MorningDispatch({ justConnected }: MorningDispatchProps)
         {/* Controls */}
         {gmailConnected && (
           <div className="flex items-center gap-3 mb-8 flex-wrap">
-            <button onClick={runPipeline} disabled={isProcessing} className="px-4 py-1.5 bg-sage text-white text-[11px] font-medium disabled:opacity-50">
+            <button onClick={() => runPipeline(false)} disabled={isProcessing} className="px-4 py-1.5 bg-sage text-white text-[11px] font-medium disabled:opacity-50">
               {isProcessing ? 'Processing...' : 'Fetch New Mail'}
+            </button>
+            <button onClick={() => runPipeline(true)} disabled={isProcessing} className="px-4 py-1.5 border border-sage text-sage text-[11px] font-medium disabled:opacity-50 hover:bg-sage-bg transition-colors">
+              Re-triage All
             </button>
             <Link href="/people" className="px-4 py-1.5 border border-border text-[11px] text-muted hover:text-ink transition-colors">
               People Database

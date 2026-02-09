@@ -1,11 +1,19 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import PeopleList from '@/components/PeopleList';
 import Link from 'next/link';
 import type { Person } from '@/types';
 
 export default function PeoplePage() {
+  return (
+    <Suspense fallback={<div className="flex items-center justify-center h-screen"><div className="text-muted">Loading People...</div></div>}>
+      <PeopleContent />
+    </Suspense>
+  );
+}
+
+function PeopleContent() {
   const [people, setPeople] = useState<Person[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [needingContact, setNeedingContact] = useState<number>(0);

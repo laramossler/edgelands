@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase';
 
+export const dynamic = 'force-dynamic';
+
 /**
  * GET /api/correspondent/oauth
  * Initiate Gmail OAuth2 flow.

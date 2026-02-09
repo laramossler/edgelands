@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import CorrespondentQueue from '@/components/CorrespondentQueue';
 import Link from 'next/link';
 import type { QueueItem, CorrespondentRun } from '@/types';
@@ -29,6 +29,14 @@ interface FeedbackMetrics {
 }
 
 export default function CorrespondentPage() {
+  return (
+    <Suspense fallback={<div className="flex items-center justify-center h-screen"><div className="text-muted">Loading Correspondent...</div></div>}>
+      <CorrespondentContent />
+    </Suspense>
+  );
+}
+
+function CorrespondentContent() {
   const [queue, setQueue] = useState<QueueData | null>(null);
   const [config, setConfig] = useState<ConfigData | null>(null);
   const [metrics, setMetrics] = useState<FeedbackMetrics | null>(null);

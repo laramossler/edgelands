@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { runPipeline, checkEmergencyAlerts } from '@/lib/correspondent';
 
+export const dynamic = 'force-dynamic';
+
 /**
  * POST /api/correspondent/process
  * Run the full Correspondent processing pipeline.

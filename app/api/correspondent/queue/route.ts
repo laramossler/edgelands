@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getQueue, generateDispatchSummary } from '@/lib/correspondent';
 import { getFeedbackMetrics } from '@/lib/feedback';
 
+export const dynamic = 'force-dynamic';
+
 /**
  * GET /api/correspondent/queue
  * Returns the current decision queue for the morning dispatch.

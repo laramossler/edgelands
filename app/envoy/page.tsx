@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import EnvoyOutreachQueue from '@/components/EnvoyOutreachQueue';
 import CoffeeChatBrief from '@/components/CoffeeChatBrief';
 import EnvoyDashboard from '@/components/EnvoyDashboard';
@@ -15,6 +15,14 @@ import type {
 type TabId = 'outreach' | 'coffee_chats' | 'dashboard';
 
 export default function EnvoyPage() {
+  return (
+    <Suspense fallback={<div className="flex items-center justify-center h-screen"><div className="text-muted">Loading Envoy...</div></div>}>
+      <EnvoyContent />
+    </Suspense>
+  );
+}
+
+function EnvoyContent() {
   const [queue, setQueue] = useState<EnvoyOutreachQueueResponse | null>(null);
   const [coffeeChats, setCoffeeChats] = useState<EnvoyCoffeeChatSuggestion[]>([]);
   const [report, setReport] = useState<EnvoyWeeklyReport | null>(null);

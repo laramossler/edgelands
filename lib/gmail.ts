@@ -247,9 +247,10 @@ export async function fetchNewEmails(
   const sinceDate = since || new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
   const sinceEpoch = Math.floor(sinceDate.getTime() / 1000);
 
-  // List messages
+  // List messages — search all received mail, not just inbox
+  // (emails that have been read/archived lose the INBOX label but still need processing)
   const listData: GmailListResponse | null = await gmailFetch(userId, '/messages', {
-    q: `after:${sinceEpoch} in:inbox`,
+    q: `after:${sinceEpoch} -in:sent -in:draft -in:spam -in:trash`,
     maxResults: String(maxResults),
   });
 

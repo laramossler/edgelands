@@ -194,7 +194,7 @@ export async function GET(request: NextRequest) {
     try {
       const sinceEpoch = Math.floor((Date.now() - 7 * 24 * 60 * 60 * 1000) / 1000);
       const listUrl = new URL('https://gmail.googleapis.com/gmail/v1/users/me/messages');
-      listUrl.searchParams.set('q', `after:${sinceEpoch} in:inbox`);
+      listUrl.searchParams.set('q', `after:${sinceEpoch} -in:sent -in:draft -in:spam -in:trash`);
       listUrl.searchParams.set('maxResults', '5');
 
       const listRes = await fetch(listUrl.toString(), {

@@ -235,8 +235,41 @@ export async function GET(request: NextRequest) {
     diagnostics.checks.db_messages = { error: err.message };
   }
 
-  // Check 8: Test insert into correspondent_config (dry run)
+  // Check 8: Ensure auth user exists + create config row
   if (autoFix && !config) {
+    // First check if the user exists in auth.users (FK requires it)
+    try {
+      const { data: authUser } = await supabaseAdmin.auth.admin.getUserById(userId);
+      diagnostics.checks.auth_user = {
+        exists: !!authUser?.user,
+        id: authUser?.user?.id,
+        email: authUser?.user?.email,
+      };
+
+      if (!authUser?.user) {
+        const { data: newUser, error: createErr } = await supabaseAdmin.auth.admin.createUser({
+          id: userId,
+          email: `user-${userId.slice(0, 8)}@edgelands.local`,
+          email_confirm: true,
+        });
+
+        if (createErr) {
+          diagnostics.checks.auth_user_create = {
+            status: 'failed',
+            error: createErr.message,
+          };
+        } else {
+          diagnostics.checks.auth_user_create = {
+            status: 'success',
+            user_id: newUser?.user?.id,
+          };
+        }
+      }
+    } catch (err: any) {
+      diagnostics.checks.auth_user = { error: err.message };
+    }
+
+    // Now try inserting the config row
     try {
       const { data: insertResult, error: insertErr } = await supabaseAdmin
         .from('correspondent_config')

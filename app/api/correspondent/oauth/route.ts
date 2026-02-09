@@ -69,6 +69,20 @@ export async function GET(request: NextRequest) {
     const userId = process.env.DEFAULT_USER_ID || 'placeholder-user-id';
     const expiry = new Date(Date.now() + tokens.expires_in * 1000).toISOString();
 
+    // Ensure the user exists in auth.users (FK constraint requires it)
+    const { data: authUser } = await supabaseAdmin.auth.admin.getUserById(userId);
+    if (!authUser?.user) {
+      const { error: createUserErr } = await supabaseAdmin.auth.admin.createUser({
+        id: userId,
+        email: `user-${userId.slice(0, 8)}@edgelands.local`,
+        email_confirm: true,
+      });
+      if (createUserErr) {
+        console.error('Failed to create auth user:', createUserErr);
+        // Try to continue anyway — maybe the table FK references something else
+      }
+    }
+
     // Upsert config with tokens — also check for any orphaned rows with wrong user_id
     const { data: existing } = await supabaseAdmin
       .from('correspondent_config')

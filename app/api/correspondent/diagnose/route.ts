@@ -223,16 +223,55 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  // Check 7: Existing messages in DB
+  // Check 7: Existing messages in DB — full inventory
   try {
-    const { count } = await supabaseAdmin
+    const { data: dbMessages, count } = await supabaseAdmin
       .from('correspondent_messages')
-      .select('*', { count: 'exact', head: true })
-      .eq('user_id', userId);
+      .select('id, sender_email, sender_name, subject, labels, processed, urgency, importance, triage_summary, received_at', { count: 'exact' })
+      .eq('user_id', userId)
+      .order('received_at', { ascending: false })
+      .limit(30);
 
-    diagnostics.checks.db_messages = { count: count || 0 };
+    diagnostics.checks.db_messages = {
+      count: count || 0,
+      messages: (dbMessages || []).map(m => ({
+        id: m.id,
+        sender: `${m.sender_name || ''} <${m.sender_email || ''}>`,
+        subject: m.subject,
+        labels: m.labels,
+        synthetic: (m.labels || []).filter((l: string) => l.startsWith('_')),
+        processed: m.processed,
+        urgency: m.urgency,
+        importance: m.importance,
+        triage: m.triage_summary,
+        received: m.received_at,
+      })),
+    };
   } catch (err: any) {
     diagnostics.checks.db_messages = { error: err.message };
+  }
+
+  // Check 7b: Existing drafts
+  try {
+    const { data: dbDrafts, count: draftCount } = await supabaseAdmin
+      .from('correspondent_drafts')
+      .select('id, status, draft_tier, urgency, importance, message_id', { count: 'exact' })
+      .eq('user_id', userId)
+      .limit(30);
+
+    diagnostics.checks.db_drafts = {
+      count: draftCount || 0,
+      drafts: (dbDrafts || []).map(d => ({
+        id: d.id,
+        status: d.status,
+        tier: d.draft_tier,
+        urgency: d.urgency,
+        importance: d.importance,
+        message_id: d.message_id,
+      })),
+    };
+  } catch (err: any) {
+    diagnostics.checks.db_drafts = { error: err.message };
   }
 
   // Check 8: Ensure auth user exists + create config row

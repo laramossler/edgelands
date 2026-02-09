@@ -872,7 +872,7 @@ async function reprocessExisting(userId: string): Promise<number> {
   // Get ALL messages for this user
   const { data: messages } = await supabaseAdmin
     .from('correspondent_messages')
-    .select('id, sender_email, labels, thread_id')
+    .select('id, sender_email, labels, thread_id, subject')
     .eq('user_id', userId);
 
   if (!messages || messages.length === 0) return 0;
@@ -882,14 +882,14 @@ async function reprocessExisting(userId: string): Promise<number> {
   for (const msg of messages) {
     const existingLabels: string[] = msg.labels || [];
 
-    // Skip if already has synthetic labels (already processed with new logic)
-    if (existingLabels.some(l => l.startsWith('_'))) continue;
+    // Strip any old synthetic labels (start with _) and recompute from scratch
+    const gmailLabels = existingLabels.filter(l => !l.startsWith('_'));
+    const labels = [...gmailLabels];
 
-    const labels = [...existingLabels];
     const senderIsAutomated = isAutomatedSender(msg.sender_email || '');
-    const isGmailAutomated = labels.includes('CATEGORY_UPDATES') ||
-      labels.includes('CATEGORY_PROMOTIONS') ||
-      labels.includes('CATEGORY_SOCIAL');
+    const isGmailAutomated = gmailLabels.includes('CATEGORY_UPDATES') ||
+      gmailLabels.includes('CATEGORY_PROMOTIONS') ||
+      gmailLabels.includes('CATEGORY_SOCIAL');
 
     // Infer list/direct from what we know
     if (senderIsAutomated || isGmailAutomated) {
@@ -900,13 +900,7 @@ async function reprocessExisting(userId: string): Promise<number> {
     }
 
     // Check for reply signals — subject starting with Re:
-    const { data: msgFull } = await supabaseAdmin
-      .from('correspondent_messages')
-      .select('subject')
-      .eq('id', msg.id)
-      .maybeSingle();
-
-    if (msgFull?.subject && /^(re|fwd|fw):/i.test(msgFull.subject)) {
+    if (msg.subject && /^(re|fwd|fw):/i.test(msg.subject)) {
       labels.push('_REPLY');
     }
 
@@ -937,13 +931,12 @@ async function reprocessExisting(userId: string): Promise<number> {
       })
       .eq('id', msg.id);
 
-    // Delete any existing drafts for this message
+    // Delete any existing drafts for this message (all statuses)
     await supabaseAdmin
       .from('correspondent_drafts')
       .delete()
       .eq('message_id', msg.id)
-      .eq('user_id', userId)
-      .in('status', ['pending', 'deferred', 'skipped']);
+      .eq('user_id', userId);
 
     updated++;
   }

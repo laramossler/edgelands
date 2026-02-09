@@ -20,6 +20,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { supabaseAdmin } from './supabase';
 import { buildRelationshipContext, logInteraction } from './people';
+import { enrichCandidate as clayEnrichCandidate, isAvailable as isClayAvailable } from './clay';
 import type {
   EnvoyCandidate,
   EnvoyOutreach,
@@ -1332,6 +1333,49 @@ export async function markResponse(
 }
 
 // ============================================================
+// Clay Enrichment
+// ============================================================
+
+/**
+ * Enrich approved candidates via Clay before drafting outreach.
+ * Only enriches candidates that haven't been enriched yet (no source_detail containing "Clay").
+ */
+async function enrichApprovedCandidates(userId: string): Promise<number> {
+  const { data: candidates } = await supabaseAdmin
+    .from('envoy_candidates')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('status', 'approved')
+    .eq('excluded', false);
+
+  if (!candidates || candidates.length === 0) return 0;
+
+  let enriched = 0;
+
+  for (const candidate of candidates) {
+    // Skip if already enriched by Clay
+    if (candidate.source_detail?.includes('Clay enriched')) continue;
+
+    const updates = await clayEnrichCandidate(candidate as EnvoyCandidate);
+    if (updates) {
+      // Mark that Clay enrichment happened
+      const sourceDetail = candidate.source_detail
+        ? `${candidate.source_detail} | Clay enriched`
+        : 'Clay enriched';
+
+      await supabaseAdmin
+        .from('envoy_candidates')
+        .update({ ...updates, source_detail: sourceDetail })
+        .eq('id', candidate.id);
+
+      enriched++;
+    }
+  }
+
+  return enriched;
+}
+
+// ============================================================
 // Main Pipeline
 // ============================================================
 
@@ -1353,7 +1397,13 @@ export async function runPipeline(userId: string): Promise<EnvoyRun> {
     // Step 1: Process follow-ups for candidates who haven't responded
     const followUpsQueued = await processFollowUps(userId);
 
-    // Step 2: Draft outreach for approved candidates
+    // Step 2: Enrich approved candidates via Clay (if configured)
+    let candidatesEnriched = 0;
+    if (isClayAvailable()) {
+      candidatesEnriched = await enrichApprovedCandidates(userId);
+    }
+
+    // Step 3: Draft outreach for approved candidates
     const outreachDrafted = await draftOutreach(userId);
 
     // Step 3: Suggest coffee chats for the coming week

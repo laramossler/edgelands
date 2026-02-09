@@ -174,6 +174,12 @@ export default function Dashboard() {
           Correspondent
         </Link>
         <Link
+          href="/envoy"
+          className="flex-1 py-4 px-6 bg-accent text-background rounded-lg font-medium hover:bg-accent/90 transition-colors text-center"
+        >
+          Envoy
+        </Link>
+        <Link
           href="/people"
           className="flex-1 py-4 px-6 border border-muted/20 text-foreground rounded-lg font-medium hover:bg-muted/5 transition-colors text-center"
         >

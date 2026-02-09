@@ -19,6 +19,10 @@
     {
       "path": "/api/correspondent/process?task=emergency_check",
       "schedule": "0 */4 * * *"
+    },
+    {
+      "path": "/api/envoy/process",
+      "schedule": "0 11 * * 1"
     }
   ]
 }

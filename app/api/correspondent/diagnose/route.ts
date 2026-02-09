@@ -235,5 +235,60 @@ export async function GET(request: NextRequest) {
     diagnostics.checks.db_messages = { error: err.message };
   }
 
+  // Check 8: Test insert into correspondent_config (dry run)
+  if (autoFix && !config) {
+    try {
+      const { data: insertResult, error: insertErr } = await supabaseAdmin
+        .from('correspondent_config')
+        .insert({
+          user_id: userId,
+          gmail_connected: false,
+        })
+        .select()
+        .maybeSingle();
+
+      if (insertErr) {
+        diagnostics.checks.test_insert = {
+          status: 'failed',
+          error: insertErr.message,
+          code: insertErr.code,
+          hint: insertErr.hint,
+          details: insertErr.details,
+        };
+      } else {
+        diagnostics.checks.test_insert = {
+          status: 'success',
+          message: 'Created config row. Re-authorize Gmail at /api/correspondent/oauth',
+          row: insertResult,
+        };
+      }
+    } catch (err: any) {
+      diagnostics.checks.test_insert = { error: err.message };
+    }
+  }
+
+  // Check 9: Table schema — try to get column info
+  try {
+    const { data: schemaData, error: schemaErr } = await supabaseAdmin.rpc(
+      'get_table_columns',
+      { table_name: 'correspondent_config' }
+    ).maybeSingle();
+
+    // If RPC doesn't exist, try a simpler approach
+    if (schemaErr) {
+      // Just try selecting * from the table with limit 0 to see if it exists
+      const { error: tableErr } = await supabaseAdmin
+        .from('correspondent_config')
+        .select('*')
+        .limit(0);
+
+      diagnostics.checks.table_exists = tableErr
+        ? { exists: false, error: tableErr.message }
+        : { exists: true };
+    }
+  } catch (err: any) {
+    diagnostics.checks.table_schema = { error: err.message };
+  }
+
   return NextResponse.json(diagnostics, { status: 200 });
 }

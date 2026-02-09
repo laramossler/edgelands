@@ -103,7 +103,7 @@ export async function GET(request: NextRequest) {
     }
 
     if (existing) {
-      await supabaseAdmin
+      const { error: updateErr } = await supabaseAdmin
         .from('correspondent_config')
         .update({
           gmail_access_token: tokens.access_token,
@@ -112,8 +112,18 @@ export async function GET(request: NextRequest) {
           gmail_connected: true,
         })
         .eq('user_id', userId);
+
+      if (updateErr) {
+        console.error('OAuth config update failed:', updateErr);
+        return NextResponse.json({
+          error: 'Failed to update config',
+          details: updateErr.message,
+          code: updateErr.code,
+          hint: updateErr.hint,
+        }, { status: 500 });
+      }
     } else {
-      await supabaseAdmin
+      const { error: insertErr } = await supabaseAdmin
         .from('correspondent_config')
         .insert({
           user_id: userId,
@@ -122,6 +132,17 @@ export async function GET(request: NextRequest) {
           gmail_token_expiry: expiry,
           gmail_connected: true,
         });
+
+      if (insertErr) {
+        console.error('OAuth config insert failed:', insertErr);
+        return NextResponse.json({
+          error: 'Failed to save Gmail config',
+          details: insertErr.message,
+          code: insertErr.code,
+          hint: insertErr.hint,
+          user_id: userId,
+        }, { status: 500 });
+      }
     }
 
     // Redirect to home page (Morning Dispatch panel)

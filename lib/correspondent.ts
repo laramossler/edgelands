@@ -43,19 +43,33 @@ function getAnthropic() {
 // ============================================================
 
 /** Pull all new messages from connected channels and store them */
-async function ingest(userId: string): Promise<number> {
+async function ingest(userId: string): Promise<{ ingested: number; debug: string }> {
   let ingested = 0;
+  const debugInfo: string[] = [];
 
   // --- Email Channel ---
-  const { data: config } = await supabaseAdmin
+  const { data: config, error: configError } = await supabaseAdmin
     .from('correspondent_config')
     .select('gmail_connected, excluded_emails')
     .eq('user_id', userId)
     .single();
 
-  if (config?.gmail_connected) {
-    const emails = await fetchNewEmails(userId);
-    const excludedEmails = new Set((config.excluded_emails || []).map((e: string) => e.toLowerCase()));
+  if (configError) {
+    debugInfo.push(`Config error: ${configError.message}`);
+    return { ingested: 0, debug: debugInfo.join('; ') };
+  }
+
+  if (!config?.gmail_connected) {
+    debugInfo.push('Gmail not connected');
+    return { ingested: 0, debug: debugInfo.join('; ') };
+  }
+
+  debugInfo.push('Gmail connected, fetching emails...');
+
+  const emails = await fetchNewEmails(userId);
+  debugInfo.push(`Fetched ${emails.length} emails from Gmail API`);
+
+  const excludedEmails = new Set((config.excluded_emails || []).map((e: string) => e.toLowerCase()));
 
     for (const email of emails) {
       // Skip excluded senders
@@ -88,13 +102,14 @@ async function ingest(userId: string): Promise<number> {
         processed: false,
       });
 
-      if (!error) ingested++;
+      if (error) {
+        debugInfo.push(`Insert error: ${error.message}`);
+      } else {
+        ingested++;
+      }
     }
-  }
 
-  // Future: SMS, Slack, etc. would be added here
-
-  return ingested;
+  return { ingested, debug: debugInfo.join('; ') };
 }
 
 // ============================================================
@@ -764,7 +779,9 @@ export async function runPipeline(userId: string): Promise<CorrespondentRun> {
     await requeueSkipped(userId);
 
     // Stage 1: Ingest
-    const messagesIngested = await ingest(userId);
+    const ingestResult = await ingest(userId);
+    const messagesIngested = ingestResult.ingested;
+    console.log('[Correspondent] Ingest:', ingestResult.debug);
 
     // Stage 2: Identify
     await identify(userId);
@@ -783,12 +800,13 @@ export async function runPipeline(userId: string): Promise<CorrespondentRun> {
       .eq('processed', true);
 
     // Update run record
-    const completedRun: Partial<CorrespondentRun> = {
+    const completedRun: Partial<CorrespondentRun> & { debug?: string } = {
       completed_at: new Date().toISOString(),
       status: 'completed',
       messages_ingested: messagesIngested,
       messages_processed: messagesProcessed || 0,
       drafts_generated: draftsGenerated,
+      debug: ingestResult.debug,
     };
 
     if (runId) {

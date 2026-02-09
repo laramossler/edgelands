@@ -104,7 +104,8 @@ export default function MorningDispatch() {
       const response = await fetch('/api/correspondent/process', { method: 'POST' });
       if (response.ok) {
         const result = await response.json();
-        setStatusMessage(`Pipeline complete: ${result.messages_ingested} ingested, ${result.drafts_generated} drafted.`);
+        const debugMsg = result.debug ? ` (${result.debug})` : '';
+        setStatusMessage(`Pipeline complete: ${result.messages_ingested} ingested, ${result.drafts_generated} drafted.${debugMsg}`);
         await fetchData();
       } else {
         setStatusMessage('Pipeline failed. Check logs.');

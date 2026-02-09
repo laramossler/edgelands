@@ -35,6 +35,7 @@ export async function POST(request: NextRequest) {
       drafts_generated: result.drafts_generated,
       error: result.error,
       completed_at: result.completed_at,
+      debug: (result as any).debug,
     });
   } catch (error) {
     console.error('Correspondent process error:', error);

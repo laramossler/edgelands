@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import MorningDispatch from '@/components/MorningDispatch';
 import EveningDebrief from '@/components/EveningDebrief';
 import WeeklyEdgelands from '@/components/WeeklyEdgelands';
@@ -9,6 +9,16 @@ type Panel = 'morning' | 'evening' | 'weekly';
 
 export default function Home() {
   const [activePanel, setActivePanel] = useState<Panel>('morning');
+  const [justConnected, setJustConnected] = useState(false);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('connected') === 'true') {
+      setJustConnected(true);
+      // Clean up the URL
+      window.history.replaceState({}, '', '/');
+    }
+  }, []);
 
   return (
     <>
@@ -34,7 +44,7 @@ export default function Home() {
       </nav>
 
       {/* Panels */}
-      {activePanel === 'morning' && <MorningDispatch />}
+      {activePanel === 'morning' && <MorningDispatch justConnected={justConnected} />}
       {activePanel === 'evening' && <EveningDebrief />}
       {activePanel === 'weekly' && <WeeklyEdgelands />}
     </>

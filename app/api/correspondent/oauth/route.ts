@@ -98,8 +98,8 @@ export async function GET(request: NextRequest) {
         });
     }
 
-    // Redirect to correspondent page
-    return NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}/correspondent?connected=true`);
+    // Redirect to home page (Morning Dispatch panel)
+    return NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}/?connected=true`);
   } catch (error) {
     console.error('OAuth error:', error);
     return NextResponse.json(

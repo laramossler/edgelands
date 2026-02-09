@@ -45,13 +45,17 @@ function getGreeting() {
   return 'Good evening.';
 }
 
-export default function MorningDispatch() {
+interface MorningDispatchProps {
+  justConnected?: boolean;
+}
+
+export default function MorningDispatch({ justConnected }: MorningDispatchProps) {
   const [queue, setQueue] = useState<QueueData | null>(null);
   const [config, setConfig] = useState<ConfigData | null>(null);
   const [metrics, setMetrics] = useState<FeedbackMetrics | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [statusMessage, setStatusMessage] = useState('');
+  const [statusMessage, setStatusMessage] = useState(justConnected ? 'Gmail connected successfully.' : '');
   const [showMetrics, setShowMetrics] = useState(false);
 
   const now = new Date();
@@ -126,7 +130,7 @@ export default function MorningDispatch() {
     );
   }
 
-  const gmailConnected = config?.gmail_connected;
+  const gmailConnected = config?.gmail_connected || justConnected;
   const editRatePct = metrics ? Math.round((1 - metrics.edit_rate) * 100) : null;
 
   return (

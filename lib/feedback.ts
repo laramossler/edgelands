@@ -15,9 +15,13 @@ import Anthropic from '@anthropic-ai/sdk';
 import { supabaseAdmin } from './supabase';
 import type { CorrespondentDraft, Person } from '@/types';
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY!,
-});
+let _anthropic: Anthropic | null = null;
+function getAnthropic() {
+  if (!_anthropic) {
+    _anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
+  }
+  return _anthropic;
+}
 
 // ============================================================
 // Types
@@ -167,7 +171,7 @@ For learned_preferences, extract SPECIFIC rules like:
 Be specific and actionable. Generic advice like "be more natural" is not useful.`;
 
   try {
-    const response = await anthropic.messages.create({
+    const response = await getAnthropic().messages.create({
       model: 'claude-3-5-haiku-20241022',
       max_tokens: 512,
       messages: [{ role: 'user', content: prompt }],

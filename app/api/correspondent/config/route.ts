@@ -17,7 +17,7 @@ export async function GET() {
       .from('correspondent_config')
       .select('user_id, gmail_connected, process_time, timezone, emergency_alerts_enabled, emergency_closeness_threshold, excluded_emails, excluded_names, created_at, updated_at')
       .eq('user_id', userId)
-      .single();
+      .maybeSingle();
 
     if (error || !data) {
       // Return defaults if no config exists
@@ -76,7 +76,7 @@ export async function PATCH(request: NextRequest) {
       .from('correspondent_config')
       .select('user_id')
       .eq('user_id', userId)
-      .single();
+      .maybeSingle();
 
     if (existing) {
       await supabaseAdmin

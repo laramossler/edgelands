@@ -56,7 +56,7 @@ async function getTokens(userId: string): Promise<GmailTokens | null> {
     .from('correspondent_config')
     .select('gmail_access_token, gmail_refresh_token, gmail_token_expiry')
     .eq('user_id', userId)
-    .single();
+    .maybeSingle();
 
   if (error || !data?.gmail_access_token) return null;
 
@@ -347,7 +347,7 @@ export async function isGmailConnected(userId: string): Promise<boolean> {
     .from('correspondent_config')
     .select('gmail_connected')
     .eq('user_id', userId)
-    .single();
+    .maybeSingle();
 
   return data?.gmail_connected === true;
 }
@@ -358,7 +358,7 @@ export async function getLastHistoryId(userId: string): Promise<string | null> {
     .from('correspondent_config')
     .select('gmail_last_history_id')
     .eq('user_id', userId)
-    .single();
+    .maybeSingle();
 
   return data?.gmail_last_history_id || null;
 }

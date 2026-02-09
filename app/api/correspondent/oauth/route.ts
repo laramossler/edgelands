@@ -69,12 +69,38 @@ export async function GET(request: NextRequest) {
     const userId = process.env.DEFAULT_USER_ID || 'placeholder-user-id';
     const expiry = new Date(Date.now() + tokens.expires_in * 1000).toISOString();
 
-    // Upsert config with tokens
+    // Upsert config with tokens — also check for any orphaned rows with wrong user_id
     const { data: existing } = await supabaseAdmin
       .from('correspondent_config')
       .select('user_id')
       .eq('user_id', userId)
-      .single();
+      .maybeSingle();
+
+    if (!existing) {
+      // Check if there's an orphaned row (e.g. created with 'placeholder-user-id')
+      const { data: orphaned } = await supabaseAdmin
+        .from('correspondent_config')
+        .select('user_id')
+        .neq('user_id', userId)
+        .limit(1)
+        .maybeSingle();
+
+      if (orphaned) {
+        // Adopt the orphaned row by updating its user_id
+        await supabaseAdmin
+          .from('correspondent_config')
+          .update({
+            user_id: userId,
+            gmail_access_token: tokens.access_token,
+            gmail_refresh_token: tokens.refresh_token || undefined,
+            gmail_token_expiry: expiry,
+            gmail_connected: true,
+          })
+          .eq('user_id', orphaned.user_id);
+
+        return NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}/?connected=true`);
+      }
+    }
 
     if (existing) {
       await supabaseAdmin

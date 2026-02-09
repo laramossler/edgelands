@@ -52,7 +52,7 @@ async function ingest(userId: string): Promise<{ ingested: number; debug: string
     .from('correspondent_config')
     .select('gmail_connected, excluded_emails')
     .eq('user_id', userId)
-    .single();
+    .maybeSingle();
 
   if (configError) {
     debugInfo.push(`Config error: ${configError.message}`);
@@ -604,7 +604,7 @@ export async function getQueue(userId: string) {
     .eq('user_id', userId)
     .order('started_at', { ascending: false })
     .limit(1)
-    .single();
+    .maybeSingle();
 
   return {
     items,
@@ -625,7 +625,7 @@ export async function approveDraft(userId: string, draftId: string): Promise<boo
     .select('*, correspondent_messages!inner(*), people:person_id(*)')
     .eq('id', draftId)
     .eq('user_id', userId)
-    .single();
+    .maybeSingle();
 
   if (!draft) return false;
 
@@ -711,7 +711,7 @@ export async function skipDraft(userId: string, draftId: string): Promise<boolea
     .select('skip_count')
     .eq('id', draftId)
     .eq('user_id', userId)
-    .single();
+    .maybeSingle();
 
   if (!draft) return false;
 
@@ -770,7 +770,7 @@ export async function runPipeline(userId: string): Promise<CorrespondentRun> {
       started_at: new Date().toISOString(),
     })
     .select()
-    .single();
+    .maybeSingle();
 
   const runId = run?.id;
 
@@ -856,7 +856,7 @@ export async function checkEmergencyAlerts(userId: string): Promise<Corresponden
     .from('correspondent_config')
     .select('emergency_alerts_enabled, emergency_closeness_threshold')
     .eq('user_id', userId)
-    .single();
+    .maybeSingle();
 
   if (!config?.emergency_alerts_enabled) return [];
 

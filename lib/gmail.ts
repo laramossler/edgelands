@@ -244,7 +244,7 @@ export async function fetchNewEmails(
   since?: Date,
   maxResults: number = 50
 ): Promise<IngestedEmail[]> {
-  const sinceDate = since || new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const sinceDate = since || new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
   const sinceEpoch = Math.floor(sinceDate.getTime() / 1000);
 
   // List messages

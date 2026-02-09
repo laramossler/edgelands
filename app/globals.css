@@ -3,10 +3,29 @@
 @tailwind utilities;
 
 :root {
-  --background: #0a0a0a;
-  --foreground: #e5e5e5;
-  --accent: #2d5016;
-  --muted: #525252;
+  /* Paper palette */
+  --ink: #2c2a25;
+  --paper: #f8f5ee;
+  --parchment: #f1ece1;
+  --warm: #e6dfd0;
+  --accent: #7a6842;
+  --accent-soft: #b8a67a;
+  --muted: #8a8478;
+  --sage: #5e7252;
+  --sage-bg: #eaf0e4;
+  --rose: #8f5f5f;
+  --rose-bg: #f3ebe9;
+  --sky: #5a6f87;
+  --sky-bg: #e8edf3;
+  --amber: #b08a3e;
+  --amber-bg: #faf3e2;
+  --earth: #6e5d48;
+  --border: #ddd6c8;
+  --card: #fdfbf6;
+
+  /* Backwards compat for existing components */
+  --background: #f8f5ee;
+  --foreground: #2c2a25;
 }
 
 * {
@@ -19,14 +38,14 @@ html,
 body {
   max-width: 100vw;
   overflow-x: hidden;
-  background-color: var(--background);
+  background-color: var(--warm);
   color: var(--foreground);
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
+  font-family: var(--font-sans), 'Karla', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-weight: 300;
+  line-height: 1.65;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -36,8 +55,11 @@ a {
   text-decoration: none;
 }
 
-@media (prefers-color-scheme: dark) {
-  html {
-    color-scheme: dark;
-  }
+/* Utility classes for the design system */
+.font-serif {
+  font-family: var(--font-serif), 'Cormorant Garamond', Georgia, serif;
+}
+
+.font-mono {
+  font-family: var(--font-mono), 'IBM Plex Mono', 'Menlo', monospace;
 }

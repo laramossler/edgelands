@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import CorrespondentQueue from '@/components/CorrespondentQueue';
 import Link from 'next/link';
 import type { QueueItem, CorrespondentRun } from '@/types';
@@ -28,14 +29,43 @@ interface FeedbackMetrics {
   top_refinements: { refinement: string; confidence: number; times_confirmed: number; circle?: string }[];
 }
 
+function formatDate(date: Date) {
+  return date.toLocaleDateString('en-US', {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
+
+function formatTime(date: Date) {
+  return date.toLocaleTimeString('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  });
+}
+
+function getGreeting() {
+  const hour = new Date().getHours();
+  if (hour < 12) return 'Good morning.';
+  if (hour < 17) return 'Good afternoon.';
+  return 'Good evening.';
+}
+
 export default function CorrespondentPage() {
+  const searchParams = useSearchParams();
+  const justConnected = searchParams.get('connected') === 'true';
+
   const [queue, setQueue] = useState<QueueData | null>(null);
   const [config, setConfig] = useState<ConfigData | null>(null);
   const [metrics, setMetrics] = useState<FeedbackMetrics | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [statusMessage, setStatusMessage] = useState('');
+  const [statusMessage, setStatusMessage] = useState(justConnected ? 'Gmail connected successfully.' : '');
   const [showMetrics, setShowMetrics] = useState(false);
+
+  const now = new Date();
 
   useEffect(() => {
     fetchData();
@@ -89,9 +119,7 @@ export default function CorrespondentPage() {
     setIsProcessing(true);
     setStatusMessage('Running Correspondent pipeline...');
     try {
-      const response = await fetch('/api/correspondent/process', {
-        method: 'POST',
-      });
+      const response = await fetch('/api/correspondent/process', { method: 'POST' });
 
       if (response.ok) {
         const result = await response.json();
@@ -113,193 +141,203 @@ export default function CorrespondentPage() {
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-screen">
-        <div className="text-muted">Loading Correspondent...</div>
+      <div className="min-h-screen bg-paper flex items-center justify-center">
+        <div className="font-mono text-[9px] tracking-[4px] uppercase text-accent-soft">Loading dispatch...</div>
       </div>
     );
   }
 
+  const gmailConnected = config?.gmail_connected || justConnected;
   const editRatePct = metrics ? Math.round((1 - metrics.edit_rate) * 100) : null;
 
   return (
-    <div className="max-w-3xl mx-auto p-8 space-y-8">
-      {/* Header */}
-      <div className="flex items-start justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-foreground">Correspondent</h1>
-          <p className="text-muted text-sm mt-1">
-            Messages to Decision — {queue?.pending || 0} pending
+    <div className="min-h-screen bg-paper">
+      <div className="max-w-[640px] mx-auto px-7 py-20">
+
+        {/* Header */}
+        <header className="text-center pb-9 mb-10 relative">
+          <div className="font-mono text-[9px] font-normal tracking-[5px] uppercase text-accent-soft mb-5">
+            Morning Dispatch
+          </div>
+          <h1 className="font-serif text-4xl font-light text-ink tracking-tight mb-1.5">
+            {formatDate(now)}
+          </h1>
+          <div className="font-serif text-[15px] font-normal tracking-wide text-muted">
+            {formatTime(now)}
+          </div>
+          <p className="font-serif text-[19px] font-light italic text-accent mt-6 leading-relaxed max-w-[480px] mx-auto">
+            {getGreeting()} {queue?.pending ? `You have ${queue.pending} message${queue.pending !== 1 ? 's' : ''} waiting.` : 'Your correspondence is settled.'}
           </p>
-        </div>
-        <Link
-          href="/"
-          className="text-sm text-muted hover:text-foreground transition-colors"
-        >
-          Dashboard
-        </Link>
-      </div>
+          <div className="absolute bottom-0 left-0 right-0 h-px bg-border" />
+          <div className="absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2 px-4 bg-paper text-[8px] tracking-[6px] text-border">
+            &#9670;
+          </div>
+        </header>
 
-      {/* Status bar */}
-      {statusMessage && (
-        <div className="text-sm text-accent bg-accent/5 border border-accent/20 rounded px-4 py-2">
-          {statusMessage}
-        </div>
-      )}
-
-      {/* Connection status */}
-      {config && !config.gmail_connected && (
-        <div className="border border-yellow-400/20 rounded-lg p-4 bg-yellow-400/5">
-          <h3 className="text-sm font-medium text-yellow-400 mb-1">Gmail not connected</h3>
-          <p className="text-sm text-muted mb-3">
-            Connect your Gmail account to start processing email.
-          </p>
-          <a
-            href="/api/correspondent/oauth"
-            className="inline-block px-4 py-2 bg-accent text-background rounded text-sm font-medium hover:bg-accent/90 transition-colors"
-          >
-            Connect Gmail
-          </a>
-        </div>
-      )}
-
-      {/* Controls */}
-      <div className="flex items-center gap-3">
-        <button
-          onClick={runPipeline}
-          disabled={isProcessing}
-          className="px-4 py-2 bg-accent text-background rounded text-sm font-medium hover:bg-accent/90 transition-colors disabled:opacity-50"
-        >
-          {isProcessing ? 'Processing...' : 'Run Pipeline'}
-        </button>
-        <Link
-          href="/people"
-          className="px-4 py-2 border border-muted/20 rounded text-sm text-muted hover:text-foreground transition-colors"
-        >
-          People Database
-        </Link>
-        <button
-          onClick={() => setShowMetrics(!showMetrics)}
-          className="px-4 py-2 border border-muted/20 rounded text-sm text-muted hover:text-foreground transition-colors"
-        >
-          {showMetrics ? 'Hide' : 'Show'} Learning
-        </button>
-        {queue?.last_run && (
-          <span className="text-xs text-muted">
-            Last run: {new Date(queue.last_run.completed_at || queue.last_run.started_at).toLocaleString()}
-            {queue.last_run.status === 'failed' && (
-              <span className="text-red-400 ml-1">(failed)</span>
-            )}
-          </span>
+        {/* Status message */}
+        {statusMessage && (
+          <div className="bg-sage-bg border-l-[3px] border-sage px-5 py-4 mb-8">
+            <div className="text-[13.5px] leading-relaxed text-ink">{statusMessage}</div>
+          </div>
         )}
-      </div>
 
-      {/* Learning Metrics Panel */}
-      {showMetrics && metrics && (
-        <section className="border border-muted/20 rounded-lg p-5 space-y-4">
-          <h2 className="text-sm font-medium text-foreground">Voice Model Learning</h2>
-
-          {/* Key metrics */}
-          <div className="grid grid-cols-4 gap-3 text-center text-sm">
-            <div className="border border-muted/10 rounded p-2">
-              <div className="text-foreground font-medium">{metrics.total_sent}</div>
-              <div className="text-muted text-xs">Sent</div>
+        {/* Gmail connection */}
+        {!gmailConnected && (
+          <div className="bg-amber-bg border-l-[3px] border-amber px-5 py-4 mb-8">
+            <div className="font-mono text-[8.5px] tracking-[1.5px] uppercase text-amber mb-1.5">
+              Setup Required
             </div>
-            <div className="border border-muted/10 rounded p-2">
-              <div className={`font-medium ${editRatePct && editRatePct >= 80 ? 'text-accent' : 'text-foreground'}`}>
-                {editRatePct !== null ? `${editRatePct}%` : '--'}
-              </div>
-              <div className="text-muted text-xs">Send rate</div>
-            </div>
-            <div className="border border-muted/10 rounded p-2">
-              <div className="text-foreground font-medium">
-                {Math.round((1 - metrics.avg_edit_ratio) * 100)}%
-              </div>
-              <div className="text-muted text-xs">Accuracy</div>
-            </div>
-            <div className="border border-muted/10 rounded p-2">
-              <div className="text-foreground font-medium">{metrics.top_refinements.length}</div>
-              <div className="text-muted text-xs">Rules learned</div>
-            </div>
-          </div>
-
-          {/* Send rate explanation */}
-          {editRatePct !== null && metrics.total_sent > 0 && (
-            <p className="text-xs text-muted">
-              {editRatePct >= 80
-                ? 'Correspondent is writing in your voice well. Edits are rare.'
-                : editRatePct >= 50
-                ? 'Learning your voice. Each edit teaches the system something new.'
-                : 'Still early days. Keep editing drafts — the system learns from every change.'}
-              {' '}Target: 80%+ send-without-edit rate.
+            <p className="text-[13.5px] leading-relaxed text-ink mb-3">
+              Connect your Gmail account to start processing your correspondence.
             </p>
-          )}
+            <a
+              href="/api/correspondent/oauth"
+              className="inline-block px-4 py-1.5 bg-sage text-white text-[11px] font-medium"
+            >
+              Connect Gmail
+            </a>
+          </div>
+        )}
 
-          {/* Per-circle breakdown */}
-          {Object.keys(metrics.by_circle).length > 0 && (
-            <div className="space-y-1">
-              <div className="text-xs text-muted font-medium">By circle:</div>
-              {Object.entries(metrics.by_circle).map(([circle, data]) => (
-                <div key={circle} className="flex items-center justify-between text-xs">
-                  <span className="text-muted">{circle}</span>
-                  <span className="text-foreground">
-                    {Math.round((1 - data.edit_rate) * 100)}% accuracy ({data.sent} sent)
-                  </span>
-                </div>
-              ))}
+        {/* Connected status + controls */}
+        {gmailConnected && (
+          <div className="flex items-center gap-3 mb-8">
+            <button
+              onClick={runPipeline}
+              disabled={isProcessing}
+              className="px-4 py-1.5 bg-sage text-white text-[11px] font-medium disabled:opacity-50 transition-opacity"
+            >
+              {isProcessing ? 'Processing...' : 'Fetch New Mail'}
+            </button>
+            <Link
+              href="/people"
+              className="px-4 py-1.5 border border-border text-[11px] text-muted hover:text-ink transition-colors"
+            >
+              People Database
+            </Link>
+            <button
+              onClick={() => setShowMetrics(!showMetrics)}
+              className="px-4 py-1.5 border border-border text-[11px] text-muted hover:text-ink transition-colors"
+            >
+              {showMetrics ? 'Hide' : 'Show'} Voice Model
+            </button>
+            {queue?.last_run && (
+              <span className="font-mono text-[10px] text-muted ml-auto">
+                Last: {new Date(queue.last_run.completed_at || queue.last_run.started_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Voice Model Learning Panel */}
+        {showMetrics && metrics && (
+          <section className="bg-sky-bg border-l-[3px] border-sky px-5 py-4 mb-8">
+            <div className="font-mono text-[8.5px] tracking-[1.5px] uppercase text-sky mb-3">
+              Voice Model Learning
             </div>
-          )}
 
-          {/* Learned style rules */}
-          {metrics.top_refinements.length > 0 && (
-            <div className="space-y-1">
-              <div className="text-xs text-muted font-medium">Learned style rules:</div>
-              {metrics.top_refinements.slice(0, 5).map((ref, i) => (
-                <div key={i} className="flex items-start gap-2 text-xs">
-                  <span className="text-accent mt-0.5">
-                    {'*'.repeat(Math.ceil(ref.confidence * 3))}
-                  </span>
-                  <span className="text-foreground">{ref.refinement}</span>
-                  {ref.circle && (
-                    <span className="text-muted">({ref.circle})</span>
-                  )}
-                </div>
-              ))}
+            <div className="grid grid-cols-4 gap-3 text-center mb-4">
+              <div className="bg-card border border-border p-2.5">
+                <div className="font-serif text-xl text-ink">{metrics.total_sent}</div>
+                <div className="font-mono text-[8.5px] tracking-[1.5px] uppercase text-muted mt-0.5">Sent</div>
+              </div>
+              <div className="bg-card border border-border p-2.5">
+                <div className="font-serif text-xl text-ink">{editRatePct !== null ? `${editRatePct}%` : '--'}</div>
+                <div className="font-mono text-[8.5px] tracking-[1.5px] uppercase text-muted mt-0.5">Send Rate</div>
+              </div>
+              <div className="bg-card border border-border p-2.5">
+                <div className="font-serif text-xl text-ink">{Math.round((1 - metrics.avg_edit_ratio) * 100)}%</div>
+                <div className="font-mono text-[8.5px] tracking-[1.5px] uppercase text-muted mt-0.5">Accuracy</div>
+              </div>
+              <div className="bg-card border border-border p-2.5">
+                <div className="font-serif text-xl text-ink">{metrics.top_refinements.length}</div>
+                <div className="font-mono text-[8.5px] tracking-[1.5px] uppercase text-muted mt-0.5">Rules</div>
+              </div>
             </div>
-          )}
 
-          {metrics.total_sent === 0 && (
-            <p className="text-xs text-muted">
-              No messages sent yet. The system will start learning from your first edit.
-            </p>
-          )}
-        </section>
-      )}
+            {editRatePct !== null && metrics.total_sent > 0 && (
+              <p className="text-[12.5px] text-muted italic leading-relaxed">
+                {editRatePct >= 80
+                  ? 'Correspondent is writing in your voice well. Edits are rare.'
+                  : editRatePct >= 50
+                  ? 'Learning your voice. Each edit teaches the system something new.'
+                  : 'Still early days. Keep editing drafts — the system learns from every change.'}
+              </p>
+            )}
 
-      {/* Decision Queue */}
-      <section>
-        <CorrespondentQueue
-          items={queue?.items || []}
-          onAction={handleAction}
-        />
-      </section>
+            {metrics.top_refinements.length > 0 && (
+              <div className="mt-3 space-y-1">
+                <div className="font-mono text-[8.5px] tracking-[1.5px] uppercase text-sky mb-1">Learned Rules</div>
+                {metrics.top_refinements.slice(0, 5).map((ref, i) => (
+                  <div key={i} className="text-[12.5px] text-ink leading-relaxed">
+                    {ref.refinement}
+                    {ref.circle && <span className="text-muted ml-1">({ref.circle})</span>}
+                  </div>
+                ))}
+              </div>
+            )}
 
-      {/* Pipeline Stats */}
-      {queue?.last_run && queue.last_run.status === 'completed' && (
-        <div className="grid grid-cols-3 gap-4 text-center text-sm">
-          <div className="border border-muted/20 rounded p-3">
-            <div className="text-foreground font-medium">{queue.last_run.messages_ingested}</div>
-            <div className="text-muted">Ingested</div>
-          </div>
-          <div className="border border-muted/20 rounded p-3">
-            <div className="text-foreground font-medium">{queue.last_run.messages_processed}</div>
-            <div className="text-muted">Processed</div>
-          </div>
-          <div className="border border-muted/20 rounded p-3">
-            <div className="text-foreground font-medium">{queue.last_run.drafts_generated}</div>
-            <div className="text-muted">Drafted</div>
-          </div>
+            {metrics.total_sent === 0 && (
+              <p className="text-[12.5px] text-muted italic">
+                No messages sent yet. The system will start learning from your first edit.
+              </p>
+            )}
+          </section>
+        )}
+
+        {/* Separator */}
+        <div className="text-center py-5 text-[8px] tracking-[8px] text-border">
+          &#9670; &#9670; &#9670;
         </div>
-      )}
+
+        {/* Messages to Decision */}
+        <section className="mb-10">
+          <div className="flex items-center gap-3 mb-4">
+            <span className="font-mono text-[9px] font-normal tracking-[4px] uppercase text-accent-soft">
+              Messages to Decision
+            </span>
+            <span className="flex-1 h-px bg-border" />
+          </div>
+
+          <CorrespondentQueue
+            items={queue?.items || []}
+            onAction={handleAction}
+          />
+        </section>
+
+        {/* Pipeline Stats */}
+        {queue?.last_run && queue.last_run.status === 'completed' && (
+          <>
+            <div className="text-center py-5 text-[8px] tracking-[8px] text-border">
+              &#9670; &#9670; &#9670;
+            </div>
+            <div className="grid grid-cols-3 gap-px bg-border border border-border overflow-hidden mb-8">
+              <div className="bg-card p-3.5 text-center">
+                <div className="font-mono text-[8.5px] tracking-[1.5px] uppercase text-muted mb-1">Ingested</div>
+                <div className="font-serif text-xl text-ink">{queue.last_run.messages_ingested}</div>
+              </div>
+              <div className="bg-card p-3.5 text-center">
+                <div className="font-mono text-[8.5px] tracking-[1.5px] uppercase text-muted mb-1">Processed</div>
+                <div className="font-serif text-xl text-ink">{queue.last_run.messages_processed}</div>
+              </div>
+              <div className="bg-card p-3.5 text-center">
+                <div className="font-mono text-[8.5px] tracking-[1.5px] uppercase text-muted mb-1">Drafted</div>
+                <div className="font-serif text-xl text-ink">{queue.last_run.drafts_generated}</div>
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* Footer */}
+        <footer className="text-center pt-9 mt-5 border-t border-border">
+          <div className="font-mono text-[8px] tracking-[4px] uppercase text-border">
+            Edgelands · {formatTime(now)}
+          </div>
+          <div className="font-mono text-[10px] text-muted mt-1.5">
+            Go be in the world. This will be here when you get back.
+          </div>
+        </footer>
+      </div>
     </div>
   );
 }

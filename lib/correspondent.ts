@@ -46,24 +46,33 @@ function getAnthropic() {
 function isAutomatedSender(email: string): boolean {
   if (!email) return false;
   const lower = email.toLowerCase();
-  const noReplyPatterns = [
-    'noreply@', 'no-reply@', 'donotreply@', 'do-not-reply@',
+
+  // Check for noreply/no-reply anywhere in the local part (catches cloudplatform-noreply@, security-noreply@, etc.)
+  const localPart = lower.split('@')[0];
+  if (/noreply|no-reply|donotreply|do-not-reply/.test(localPart)) return true;
+
+  // Common automated sender prefixes
+  const automatedPrefixes = [
     'notifications@', 'notification@', 'notify@',
     'newsletter@', 'news@', 'updates@', 'update@',
     'marketing@', 'promo@', 'promotions@',
     'mailer@', 'mailer-daemon@', 'postmaster@',
-    'support@', 'billing@', 'receipts@', 'receipt@',
-    'hello@', 'info@',
+    'billing@', 'receipts@', 'receipt@',
+    'events@', 'contact@', 'messages+',
+    'customer_success@', 'customerservice@',
   ];
-  if (noReplyPatterns.some(p => lower.startsWith(p))) return true;
+  if (automatedPrefixes.some(p => lower.startsWith(p))) return true;
 
   // Common automated domains
   const autoDomains = [
     'vercel.com', 'github.com', 'gitlab.com', 'bitbucket.org',
     'netlify.com', 'heroku.com', 'aws.amazon.com',
-    'googleusercontent.com', 'mail.google.com',
+    'googleusercontent.com', 'google.com',
     'facebookmail.com', 'linkedin.com',
     'shopify.com', 'stripe.com', 'paypal.com',
+    'squarespace.com', 'squaremktg.com', 'amazon.com',
+    'capitalone.com', 'uber.com', 'etsy.com',
+    'garmin.com', 'dreamstime.com',
   ];
   const domain = lower.split('@')[1];
   if (domain && autoDomains.some(d => domain.endsWith(d))) return true;
@@ -225,8 +234,35 @@ async function triage(userId: string): Promise<void> {
 
   if (!unprocessed || unprocessed.length === 0) return;
 
-  // Build triage context for Claude
-  for (const message of unprocessed) {
+  // Sort: _DIRECT first, then _REPLY, then everything else, _LIST last
+  const priority = (msg: any) => {
+    const labels: string[] = msg.labels || [];
+    if (labels.includes('_LIST')) return 99;
+    if (labels.includes('_BULK_CC')) return 80;
+    if (labels.includes('_DIRECT') && labels.includes('_REPLY')) return 0;
+    if (labels.includes('_DIRECT')) return 1;
+    if (labels.includes('_REPLY')) return 2;
+    return 50;
+  };
+  const sorted = [...unprocessed].sort((a, b) => priority(a) - priority(b));
+
+  for (const message of sorted) {
+    const labels: string[] = message.labels || [];
+
+    // Fast-track: skip triage for obvious list/automated messages
+    if (labels.includes('_LIST')) {
+      await supabaseAdmin
+        .from('correspondent_messages')
+        .update({
+          urgency: 0,
+          importance: 0,
+          triage_summary: 'Automated/list email — skipped',
+          processed: true,
+        })
+        .eq('id', message.id);
+      continue;
+    }
+
     const person = message.people as Person | null;
 
     const triagePrompt = buildTriagePrompt(message, person);

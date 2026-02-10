@@ -29,6 +29,7 @@ function EnvoyContent() {
   const [activeTab, setActiveTab] = useState<TabId>('outreach');
   const [isLoading, setIsLoading] = useState(true);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isScanning, setIsScanning] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
 
   useEffect(() => {
@@ -123,7 +124,7 @@ function EnvoyContent() {
       if (response.ok) {
         const result = await response.json();
         setStatusMessage(
-          `Pipeline complete: ${result.outreach_drafted} drafted, ${result.coffee_chats_suggested} chats suggested, ${result.follow_ups_queued} follow-ups.`
+          `Pipeline complete: ${result.candidates_identified || 0} discovered, ${result.outreach_drafted} drafted, ${result.coffee_chats_suggested} chats suggested, ${result.follow_ups_queued} follow-ups.`
         );
         await fetchData();
       } else {
@@ -134,6 +135,32 @@ function EnvoyContent() {
       setStatusMessage('Pipeline error.');
     } finally {
       setIsProcessing(false);
+      setTimeout(() => setStatusMessage(''), 5000);
+    }
+  };
+
+  const scanForCandidates = async () => {
+    setIsScanning(true);
+    setStatusMessage('Scanning for candidates...');
+    try {
+      const response = await fetch('/api/envoy/discover', { method: 'POST' });
+
+      if (response.ok) {
+        const result = await response.json();
+        setStatusMessage(
+          result.candidates_discovered > 0
+            ? `Found ${result.candidates_discovered} new candidate${result.candidates_discovered > 1 ? 's' : ''}. Review them in Outreach.`
+            : 'No new candidates found. Try adding more people first.'
+        );
+        await fetchData();
+      } else {
+        setStatusMessage('Scan failed. Check logs.');
+      }
+    } catch (error) {
+      console.error('Scan error:', error);
+      setStatusMessage('Scan error.');
+    } finally {
+      setIsScanning(false);
       setTimeout(() => setStatusMessage(''), 5000);
     }
   };
@@ -189,10 +216,17 @@ function EnvoyContent() {
       <div className="flex items-center gap-3">
         <button
           onClick={runPipeline}
-          disabled={isProcessing}
+          disabled={isProcessing || isScanning}
           className="px-4 py-2 bg-accent text-background rounded text-sm font-medium hover:bg-accent/90 transition-colors disabled:opacity-50"
         >
           {isProcessing ? 'Processing...' : 'Run Pipeline'}
+        </button>
+        <button
+          onClick={scanForCandidates}
+          disabled={isScanning || isProcessing}
+          className="px-4 py-2 border border-accent/40 text-accent rounded text-sm font-medium hover:bg-accent/10 transition-colors disabled:opacity-50"
+        >
+          {isScanning ? 'Scanning...' : 'Scan for Candidates'}
         </button>
         <Link
           href="/people"

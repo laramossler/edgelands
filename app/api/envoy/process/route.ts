@@ -27,6 +27,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       status: result.status,
+      candidates_identified: result.candidates_identified,
       outreach_drafted: result.outreach_drafted,
       coffee_chats_suggested: result.coffee_chats_suggested,
       follow_ups_queued: result.follow_ups_queued,

@@ -1333,6 +1333,338 @@ export async function markResponse(
 }
 
 // ============================================================
+// Candidate Discovery
+// ============================================================
+
+/**
+ * Scan the People Database and Correspondent messages to proactively
+ * identify new candidates across all four pipelines. This is the
+ * "Phase 2" behavior: the Envoy finds people for you.
+ */
+export async function discoverCandidates(userId: string): Promise<number> {
+  let discovered = 0;
+
+  // Get all existing candidate person_ids so we don't re-suggest
+  const { data: existingCandidates } = await supabaseAdmin
+    .from('envoy_candidates')
+    .select('person_id, email, name')
+    .eq('user_id', userId);
+
+  const existingPersonIds = new Set(
+    (existingCandidates || []).map(c => c.person_id).filter(Boolean)
+  );
+  const existingEmails = new Set(
+    (existingCandidates || []).map(c => c.email?.toLowerCase()).filter(Boolean)
+  );
+  const existingNames = new Set(
+    (existingCandidates || []).map(c => c.name?.toLowerCase()).filter(Boolean)
+  );
+
+  const config = await getConfig(userId);
+  const excludedPeople = new Set(config.excluded_people || []);
+
+  function isAlreadyTracked(personId?: string, email?: string, name?: string): boolean {
+    if (personId && (existingPersonIds.has(personId) || excludedPeople.has(personId))) return true;
+    if (email && existingEmails.has(email.toLowerCase())) return true;
+    if (name && existingNames.has(name.toLowerCase())) return true;
+    return false;
+  }
+
+  function trackNew(personId?: string, email?: string, name?: string) {
+    if (personId) existingPersonIds.add(personId);
+    if (email) existingEmails.add(email.toLowerCase());
+    if (name) existingNames.add(name.toLowerCase());
+  }
+
+  // ---- Pipeline 1: Design Partners from People Database ----
+  const { data: professionals } = await supabaseAdmin
+    .from('people')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('circle', 'professional')
+    .order('closeness', { ascending: true });
+
+  if (professionals) {
+    const dpKeywords = [
+      'compliance', 'security', 'platform', 'operations', 'infrastructure',
+      'identity', 'authentication', 'devops', 'sre', 'engineering manager',
+      'head of', 'director', 'vp',
+    ];
+
+    for (const person of professionals) {
+      if (isAlreadyTracked(person.id)) continue;
+
+      const text = [person.occupation, person.notes, person.care_notes, ...(person.interests || [])]
+        .filter(Boolean).join(' ').toLowerCase();
+
+      const matches = dpKeywords.filter(k => text.includes(k));
+      if (matches.length === 0) continue;
+
+      const { error } = await supabaseAdmin.from('envoy_candidates').insert({
+        user_id: userId,
+        name: person.name,
+        email: person.email?.[0] || null,
+        role: person.occupation || null,
+        location: person.location || null,
+        pipeline: 'design_partner',
+        source_pool: person.how_we_met?.toLowerCase().includes('airbnb')
+          ? 'airbnb_network'
+          : person.how_we_met?.toLowerCase().includes('capital one')
+            ? 'capital_one_alumni'
+            : 'people_database',
+        source_detail: `Auto-discovered: ${matches.join(', ')} match`,
+        person_id: person.id,
+        shared_interests: person.interests || null,
+        their_work: person.occupation || null,
+        why_reach_out: `Professional contact with relevant background (${matches.slice(0, 2).join(', ')}). You know them as: ${person.relationship}.`,
+        what_you_can_offer: "Early look at Colleagues — what you've been building since Gandalf.",
+        warm_path: person.closeness <= 3 ? `Direct — closeness ${person.closeness}/5` : null,
+        status: 'suggested',
+        priority: person.closeness <= 2 ? 5 : person.closeness <= 3 ? 4 : 3,
+        outreach_count: 0,
+        excluded: false,
+      });
+
+      if (!error) { discovered++; trackNew(person.id, person.email?.[0], person.name); }
+    }
+  }
+
+  // ---- Pipeline 2: Builders & Kindred Spirits ----
+  const { data: potentialBuilders } = await supabaseAdmin
+    .from('people')
+    .select('*')
+    .eq('user_id', userId)
+    .in('circle', ['professional', 'community', 'friend']);
+
+  if (potentialBuilders) {
+    const builderKeywords = [
+      'ai', 'agent', 'mcp', 'claude', 'llm', 'newsletter', 'substack',
+      'systems thinking', 'distributed systems', 'open source',
+      'startup', 'founder', 'indie',
+    ];
+
+    for (const person of potentialBuilders) {
+      if (isAlreadyTracked(person.id)) continue;
+
+      const text = [person.occupation, person.notes, person.care_notes, ...(person.interests || [])]
+        .filter(Boolean).join(' ').toLowerCase();
+
+      const matches = builderKeywords.filter(k => text.includes(k));
+      if (matches.length < 2) continue;
+
+      const { error } = await supabaseAdmin.from('envoy_candidates').insert({
+        user_id: userId,
+        name: person.name,
+        email: person.email?.[0] || null,
+        role: person.occupation || null,
+        location: person.location || null,
+        pipeline: 'builder',
+        source_pool: 'people_database',
+        source_detail: `Auto-discovered: ${matches.join(', ')} match`,
+        person_id: person.id,
+        shared_interests: person.interests || null,
+        their_work: person.occupation || null,
+        why_reach_out: `Kindred spirit — building at the intersection of ${matches.slice(0, 2).join(' and ')}.`,
+        what_you_can_offer: "Compare notes on what you're both building. Share your Dispatches newsletter.",
+        warm_path: person.closeness <= 3 ? `Direct — closeness ${person.closeness}/5` : null,
+        status: 'suggested',
+        priority: matches.length >= 3 ? 4 : 3,
+        outreach_count: 0,
+        excluded: false,
+      });
+
+      if (!error) { discovered++; trackNew(person.id, person.email?.[0], person.name); }
+    }
+  }
+
+  // ---- Pipeline 3: Creative Community ----
+  // People you know but haven't talked to in 30+ days with creative overlap
+  const { data: creatives } = await supabaseAdmin
+    .from('people')
+    .select('*')
+    .eq('user_id', userId)
+    .in('circle', ['neighbor', 'community', 'friend']);
+
+  if (creatives) {
+    const creativeKeywords = [
+      'ferment', 'cheese', 'bread', 'farm', 'garden', 'permaculture',
+      'art', 'writer', 'maker', 'craft', 'conversation', 'cooking',
+      'music', 'pottery', 'weaving', 'gorge',
+    ];
+
+    for (const person of creatives) {
+      if (isAlreadyTracked(person.id)) continue;
+
+      const text = [person.occupation, person.notes, person.care_notes, person.how_we_met, ...(person.interests || [])]
+        .filter(Boolean).join(' ').toLowerCase();
+
+      const matches = creativeKeywords.filter(k => text.includes(k));
+      if (matches.length === 0) continue;
+
+      const daysSince = person.last_contact
+        ? (Date.now() - new Date(person.last_contact).getTime()) / (1000 * 60 * 60 * 24)
+        : 999;
+
+      if (daysSince < 30 && person.last_contact) continue;
+
+      const { error } = await supabaseAdmin.from('envoy_candidates').insert({
+        user_id: userId,
+        name: person.name,
+        email: person.email?.[0] || null,
+        role: person.occupation || null,
+        location: person.location || null,
+        pipeline: 'creative',
+        source_pool: person.circle === 'neighbor' ? 'gorge_community' : 'people_database',
+        source_detail: `Auto-discovered: ${matches.join(', ')} — ${Math.round(daysSince)}d since last contact`,
+        person_id: person.id,
+        shared_interests: person.interests || null,
+        why_reach_out: `Shared interest in ${matches.slice(0, 2).join(' and ')}. Haven't connected in a while.`,
+        what_you_can_offer: matches.some(m => m.includes('ferment'))
+          ? 'Share your spring lacto-fermentation notes. Invite to a tasting.'
+          : 'Reconnect over shared interests. Coffee or a walk.',
+        warm_path: 'Direct — you know each other',
+        status: 'suggested',
+        priority: person.closeness <= 3 ? 3 : 2,
+        outreach_count: 0,
+        excluded: false,
+      });
+
+      if (!error) { discovered++; trackNew(person.id, person.email?.[0], person.name); }
+    }
+  }
+
+  // ---- Pipeline 4: People You Can Help ----
+  // Scan care_notes for signals of need
+  const { data: allPeople } = await supabaseAdmin
+    .from('people')
+    .select('*')
+    .eq('user_id', userId)
+    .not('care_notes', 'is', null);
+
+  if (allPeople) {
+    const helpSignals = [
+      { pattern: 'new role', offer: 'Offer advice from your experience building security platforms.' },
+      { pattern: 'just started', offer: 'Share what you wish someone had told you when you started.' },
+      { pattern: 'struggling with', offer: 'You might have experience with exactly this.' },
+      { pattern: 'looking for', offer: 'You might know someone or something that helps.' },
+      { pattern: 'newsletter', offer: "Share what's working with Dispatches — open rates, format, rhythm." },
+      { pattern: 'moved to', offer: 'Welcome them. Bring over a jar of something.' },
+      { pattern: 'new to the gorge', offer: 'Be the neighbor who makes the Gorge feel like home.' },
+      { pattern: 'building', offer: 'Offer to be a sounding board — you know what early building feels like.' },
+    ];
+
+    for (const person of allPeople) {
+      if (isAlreadyTracked(person.id)) continue;
+
+      const text = `${(person.care_notes || '').toLowerCase()} ${(person.notes || '').toLowerCase()}`;
+      const matched = helpSignals.filter(s => text.includes(s.pattern));
+      if (matched.length === 0) continue;
+
+      const best = matched[0];
+
+      const { error } = await supabaseAdmin.from('envoy_candidates').insert({
+        user_id: userId,
+        name: person.name,
+        email: person.email?.[0] || null,
+        role: person.occupation || null,
+        location: person.location || null,
+        pipeline: 'generous',
+        source_pool: 'people_database',
+        source_detail: `Auto-discovered: care_notes signal "${best.pattern}"`,
+        person_id: person.id,
+        shared_interests: person.interests || null,
+        why_reach_out: `Their notes mention "${best.pattern}" — you can help.`,
+        what_you_can_offer: best.offer,
+        warm_path: 'Direct — you know each other',
+        status: 'suggested',
+        priority: person.closeness <= 2 ? 4 : 3,
+        outreach_count: 0,
+        excluded: false,
+      });
+
+      if (!error) { discovered++; trackNew(person.id, person.email?.[0], person.name); }
+    }
+  }
+
+  // ---- Inbound Discovery from Correspondent ----
+  // Newsletter replies and relevant inbound emails from unknown senders
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+  const { data: recentMessages } = await supabaseAdmin
+    .from('correspondent_messages')
+    .select('*')
+    .eq('user_id', userId)
+    .is('person_id', null) // not yet in People DB
+    .gte('received_at', thirtyDaysAgo.toISOString())
+    .order('received_at', { ascending: false });
+
+  if (recentMessages) {
+    const senderSeen = new Set<string>();
+
+    for (const msg of recentMessages) {
+      const senderKey = msg.sender_email?.toLowerCase() || msg.sender_name?.toLowerCase();
+      if (!senderKey || senderSeen.has(senderKey)) continue;
+      senderSeen.add(senderKey);
+
+      if (isAlreadyTracked(undefined, msg.sender_email, msg.sender_name)) continue;
+
+      const text = `${msg.subject || ''} ${msg.body || ''}`.toLowerCase();
+
+      const isNewsletterReply = (msg.subject || '').toLowerCase().includes('dispatch')
+        || (msg.labels || []).some((l: string) => l.toLowerCase().includes('newsletter'));
+
+      const inboundKeywords: Record<string, string[]> = {
+        design_partner: ['compliance', 'security', 'coordination', 'platform', 'tooling'],
+        builder: ['agent', 'ai', 'mcp', 'building', 'claude', 'newsletter'],
+      };
+
+      let pipeline: EnvoyPipeline | null = null;
+      let matchedKw: string[] = [];
+
+      for (const [p, keywords] of Object.entries(inboundKeywords)) {
+        const hits = keywords.filter(k => text.includes(k));
+        if (hits.length >= 2 || (isNewsletterReply && hits.length >= 1)) {
+          pipeline = p as EnvoyPipeline;
+          matchedKw = hits;
+          break;
+        }
+      }
+
+      if (!pipeline && isNewsletterReply) {
+        pipeline = 'builder';
+        matchedKw = ['newsletter reply'];
+      }
+
+      if (!pipeline) continue;
+
+      const { error } = await supabaseAdmin.from('envoy_candidates').insert({
+        user_id: userId,
+        name: msg.sender_name || msg.sender_email || 'Unknown',
+        email: msg.sender_email || null,
+        pipeline,
+        source_pool: isNewsletterReply ? 'inbound_dispatches' : 'correspondent_inbound',
+        source_detail: `Auto-discovered from ${isNewsletterReply ? 'newsletter reply' : 'inbound email'}: ${matchedKw.join(', ')}`,
+        why_reach_out: isNewsletterReply
+          ? `They replied to Dispatches about: ${msg.subject || 'your newsletter'}`
+          : `They wrote about ${matchedKw.slice(0, 2).join(' and ')}. Worth exploring.`,
+        what_you_can_offer: isNewsletterReply
+          ? 'Thank them for reading. Learn what resonated. Deepen the connection.'
+          : 'Continue the conversation they started.',
+        status: 'suggested',
+        priority: isNewsletterReply ? 4 : 3,
+        outreach_count: 0,
+        excluded: false,
+      });
+
+      if (!error) { discovered++; trackNew(undefined, msg.sender_email, msg.sender_name); }
+    }
+  }
+
+  return discovered;
+}
+
+// ============================================================
 // Clay Enrichment
 // ============================================================
 
@@ -1394,6 +1726,9 @@ export async function runPipeline(userId: string): Promise<EnvoyRun> {
   const runId = run?.id;
 
   try {
+    // Step 0: Discover new candidates from People DB + Correspondent inbound
+    const candidatesIdentified = await discoverCandidates(userId);
+
     // Step 1: Process follow-ups for candidates who haven't responded
     const followUpsQueued = await processFollowUps(userId);
 
@@ -1406,10 +1741,10 @@ export async function runPipeline(userId: string): Promise<EnvoyRun> {
     // Step 3: Draft outreach for approved candidates
     const outreachDrafted = await draftOutreach(userId);
 
-    // Step 3: Suggest coffee chats for the coming week
+    // Step 4: Suggest coffee chats for the coming week
     const coffeeChatsSuggested = await suggestCoffeeChats(userId);
 
-    // Step 4: Generate briefs for any scheduled coffee chats
+    // Step 5: Generate briefs for any scheduled coffee chats
     const { data: scheduledChats } = await supabaseAdmin
       .from('envoy_coffee_chats')
       .select('id')
@@ -1426,7 +1761,7 @@ export async function runPipeline(userId: string): Promise<EnvoyRun> {
     const completedRun: Partial<EnvoyRun> = {
       completed_at: new Date().toISOString(),
       status: 'completed' as RunStatus,
-      candidates_identified: 0,
+      candidates_identified: candidatesIdentified,
       outreach_drafted: outreachDrafted,
       coffee_chats_suggested: coffeeChatsSuggested,
       follow_ups_queued: followUpsQueued,

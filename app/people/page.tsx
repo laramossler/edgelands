@@ -45,6 +45,33 @@ export default function PeoplePage() {
     );
   }
 
+  const [isPopulating, setIsPopulating] = useState(false);
+  const [populateStatus, setPopulateStatus] = useState('');
+
+  const autoPopulate = async () => {
+    setIsPopulating(true);
+    setPopulateStatus('Scanning emails and classifying senders...');
+    try {
+      const res = await fetch('/api/people/auto-populate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ limit: 20 }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setPopulateStatus(`Created ${data.created} people from ${data.total_discovered} discovered senders.`);
+        await fetchPeople();
+      } else {
+        setPopulateStatus('Failed to auto-populate. Check logs.');
+      }
+    } catch {
+      setPopulateStatus('Error running auto-populate.');
+    } finally {
+      setIsPopulating(false);
+      setTimeout(() => setPopulateStatus(''), 10000);
+    }
+  };
+
   // Group by circle for summary
   const circleCount = people.reduce((acc, p) => {
     acc[p.circle] = (acc[p.circle] || 0) + 1;
@@ -62,6 +89,13 @@ export default function PeoplePage() {
           </p>
         </div>
         <div className="flex gap-3">
+          <button
+            onClick={autoPopulate}
+            disabled={isPopulating}
+            className="text-sm px-3 py-1 bg-accent text-white rounded disabled:opacity-50"
+          >
+            {isPopulating ? 'Scanning...' : 'Auto-populate from Email'}
+          </button>
           <Link
             href="/correspondent"
             className="text-sm text-muted hover:text-foreground transition-colors"
@@ -76,6 +110,13 @@ export default function PeoplePage() {
           </Link>
         </div>
       </div>
+
+      {/* Auto-populate status */}
+      {populateStatus && (
+        <div className="border border-accent/20 rounded-lg p-4 bg-accent/5">
+          <p className="text-sm text-foreground">{populateStatus}</p>
+        </div>
+      )}
 
       {/* Nudge summary */}
       {needingContact > 0 && (

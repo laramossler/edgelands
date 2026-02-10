@@ -129,24 +129,30 @@ async function draftOutreach(userId: string): Promise<number> {
     // Build candidate context for Claude
     const candidateContext = buildCandidateContext(candidate);
 
-    // Determine best channel
-    const channel = determineChannel(candidate, person);
+    // Determine best channel (with cultivation strategy)
+    const channelDecision = determineChannelWithCultivation(candidate, person);
 
     // Generate draft
-    const result = await generateOutreachDraft(candidate, person, candidateContext, relationshipContext, channel);
+    const result = await generateOutreachDraft(candidate, person, candidateContext, relationshipContext, channelDecision.channel);
 
     if (result) {
+      // Prepend cultivation step to voice_notes if present
+      let voiceNotes = result.voice_notes || '';
+      if (channelDecision.cultivation_step) {
+        voiceNotes = `BEFORE SENDING: ${channelDecision.cultivation_step}\n\n${voiceNotes}`;
+      }
+
       const { error } = await supabaseAdmin.from('envoy_outreach').insert({
         user_id: userId,
         candidate_id: candidate.id,
         person_id: candidate.person_id,
-        channel,
+        channel: channelDecision.channel,
         subject: result.subject,
         body: result.body,
         pipeline: candidate.pipeline,
         candidate_context: candidateContext,
         relationship_context: relationshipContext || null,
-        voice_notes: result.voice_notes,
+        voice_notes: voiceNotes,
         status: 'suggested',
       });
 
@@ -191,27 +197,91 @@ function buildCandidateContext(candidate: EnvoyCandidate): string {
   return ctx;
 }
 
+interface ChannelDecision {
+  channel: EnvoyOutreach['channel'];
+  cultivation_step?: string; // suggested pre-outreach action
+}
+
 function determineChannel(candidate: EnvoyCandidate, person: Person | null): EnvoyOutreach['channel'] {
-  // If warm intro is available, suggest that route
-  if (candidate.warm_intro_through || candidate.warm_path) {
-    return 'intro_request';
+  const decision = determineChannelWithCultivation(candidate, person);
+  return decision.channel;
+}
+
+function determineChannelWithCultivation(candidate: EnvoyCandidate, person: Person | null): ChannelDecision {
+  // Newsletter invites always go via email
+  if (candidate.source_pool === 'newsletter_invite') {
+    return { channel: 'email' };
   }
 
-  // If we know them and have email, use email
-  if (person && person.email && person.email.length > 0) {
-    return 'email';
-  }
-  if (candidate.email) {
-    return 'email';
+  // If warm intro is available, suggest that route
+  if (candidate.warm_intro_through || candidate.warm_path) {
+    return { channel: 'intro_request' };
   }
 
   // Creative/local pipeline — in-person follow-up is often best
   if (candidate.pipeline === 'creative' && candidate.source_pool === 'gorge_community') {
-    return 'in_person_followup';
+    return { channel: 'in_person_followup' };
   }
 
-  // Default to email
-  return 'email';
+  // People we already know — direct email is fine
+  if (person && person.closeness <= 3) {
+    return { channel: 'email' };
+  }
+
+  // People we know somewhat — email with context
+  if (person && person.email && person.email.length > 0) {
+    return { channel: 'email' };
+  }
+
+  // For people we DON'T know well: build a cultivation path
+  // First outreach should be preceded by genuine engagement with their work
+  if (candidate.outreach_count === 0 && !person) {
+    const cultivation = buildCultivationStep(candidate);
+    if (cultivation) {
+      return { channel: candidate.email ? 'email' : 'dm', cultivation_step: cultivation };
+    }
+  }
+
+  if (candidate.email) {
+    return { channel: 'email' };
+  }
+
+  return { channel: 'dm' };
+}
+
+function buildCultivationStep(candidate: EnvoyCandidate): string | null {
+  const work = [candidate.their_work, candidate.source_detail, candidate.why_reach_out]
+    .filter(Boolean).join(' ').toLowerCase();
+
+  const steps: string[] = [];
+
+  // If they write a newsletter or substack, subscribe first and reference a specific piece
+  if (work.includes('newsletter') || work.includes('substack') || work.includes('blog') || work.includes('writing')) {
+    steps.push('Subscribe to their newsletter/blog. Read 2-3 pieces. Reference a specific one in your outreach.');
+  }
+
+  // If they're active on Twitter/X or LinkedIn
+  if (work.includes('twitter') || work.includes('linkedin') || work.includes('post')) {
+    steps.push('Engage with 2-3 of their recent posts — thoughtful comments, not just likes. Let them see your name before you reach out.');
+  }
+
+  // If they're a builder with open source work
+  if (work.includes('open source') || work.includes('github') || work.includes('repo')) {
+    steps.push('Star their repo. Open an issue or leave a thoughtful comment on their work. They\'ll see you as a peer, not a stranger.');
+  }
+
+  // If they gave a talk or were on a podcast
+  if (work.includes('talk') || work.includes('podcast') || work.includes('conference') || work.includes('speaker')) {
+    steps.push('Watch/listen to their talk. Reference a specific moment or idea in your outreach.');
+  }
+
+  // If they're in the Gorge or local
+  if (work.includes('gorge') || work.includes('white salmon') || work.includes('hood river')) {
+    steps.push('Look for a local event, farmers market, or community gathering where you might run into them naturally.');
+  }
+
+  if (steps.length === 0) return null;
+  return steps[0]; // return the most relevant cultivation step
 }
 
 interface OutreachDraftResult {
@@ -288,6 +358,14 @@ THE VOICE: You are writing as Lara — someone who lives on 50 acres in White Sa
       break;
   }
 
+  // Newsletter invite overlay — when source_pool is newsletter_invite, the tone shifts
+  prompt += `\n\nNEWSLETTER INVITE CONTEXT: If the candidate's source is "newsletter_invite", this is a personalized Dispatches from White Salmon invitation. The invite should:
+- Reference your specific shared interest and why THEY would enjoy it
+- Mention what Dispatches covers (life at 50 acres, AI agent infrastructure, fermentation, and the in-between)
+- Feel like sharing something personal, not promoting a product
+- Include a direct link or offer to add them
+- Be SHORT — 3-5 sentences max. The newsletter speaks for itself.`;
+
   switch (channel) {
     case 'email':
       prompt += `\nCHANNEL: Email. Can be a few paragraphs. Include a subject line.`;
@@ -323,6 +401,10 @@ ${candidateContext}
 
   if (relationshipContext) {
     prompt += `\nEXISTING RELATIONSHIP CONTEXT:\n${relationshipContext}\n`;
+  }
+
+  if (candidate.source_pool === 'newsletter_invite') {
+    prompt += `\nTYPE: Dispatches newsletter invite. This is a personal invitation to subscribe to your newsletter, Dispatches from White Salmon. Keep it short, warm, and specific to what you share.\n`;
   }
 
   if (candidate.outreach_count > 0) {
@@ -412,28 +494,7 @@ async function suggestCoffeeChats(userId: string): Promise<number> {
   const suggestionsNeeded = (target + 3) - existingCount; // suggest a few extra for choice
   let suggested = 0;
 
-  // Pull from candidates across all pipelines
-  const { data: candidates } = await supabaseAdmin
-    .from('envoy_candidates')
-    .select('*')
-    .eq('user_id', userId)
-    .in('status', ['approved', 'sent', 'responded'])
-    .eq('excluded', false)
-    .order('priority', { ascending: false })
-    .limit(suggestionsNeeded * 2); // fetch extras for filtering
-
-  if (!candidates || candidates.length === 0) return 0;
-
-  // Also get people from the database who might be good coffee chat candidates
-  const { data: people } = await supabaseAdmin
-    .from('people')
-    .select('*')
-    .eq('user_id', userId)
-    .in('circle', ['professional', 'community', 'friend'])
-    .order('closeness', { ascending: true })
-    .limit(10);
-
-  // Check which candidates/people already had recent coffee chats
+  // Check which people already had recent coffee chats
   const thirtyDaysAgo = new Date();
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
@@ -441,36 +502,155 @@ async function suggestCoffeeChats(userId: string): Promise<number> {
     .from('envoy_coffee_chats')
     .select('candidate_id, person_id')
     .eq('user_id', userId)
-    .eq('status', 'completed')
-    .gte('completed_at', thirtyDaysAgo.toISOString());
+    .in('status', ['completed', 'suggested', 'outreach_pending', 'scheduled'])
+    .gte('created_at', thirtyDaysAgo.toISOString());
 
   const recentCandidateIds = new Set((recentChats || []).map(c => c.candidate_id).filter(Boolean));
   const recentPersonIds = new Set((recentChats || []).map(c => c.person_id).filter(Boolean));
 
-  // Generate suggestions from candidates
-  for (const candidate of candidates) {
-    if (suggested >= suggestionsNeeded) break;
-    if (recentCandidateIds.has(candidate.id)) continue;
-    if (candidate.person_id && recentPersonIds.has(candidate.person_id)) continue;
+  // ---- Priority 1: Deep unmanaged network ----
+  // People you already know (closeness 1-3) but haven't connected with in 30+ days.
+  // These are the highest-value coffee chats — existing warmth, just needs a spark.
+  const { data: deepNetwork } = await supabaseAdmin
+    .from('people')
+    .select('*')
+    .eq('user_id', userId)
+    .in('circle', ['professional', 'community', 'friend'])
+    .lte('closeness', 3)
+    .order('last_contact', { ascending: true, nullsFirst: true });
 
-    const suggestion = await generateCoffeeChatSuggestion(candidate);
+  if (deepNetwork) {
+    for (const person of deepNetwork) {
+      if (suggested >= suggestionsNeeded) break;
+      if (recentPersonIds.has(person.id)) continue;
 
-    const { error } = await supabaseAdmin.from('envoy_coffee_chats').insert({
-      user_id: userId,
-      candidate_id: candidate.id,
-      person_id: candidate.person_id,
-      participant_name: candidate.name,
-      participant_role: candidate.role,
-      participant_org: candidate.organization,
-      pipeline: candidate.pipeline,
-      why_now: suggestion.why_now,
-      suggested_topics: suggestion.topics,
-      your_ask: suggestion.your_ask,
-      status: 'suggested',
-      suggested_for_week: weekStart,
-    });
+      // Must be 30+ days since last contact (or never contacted)
+      const daysSince = person.last_contact
+        ? (Date.now() - new Date(person.last_contact).getTime()) / (1000 * 60 * 60 * 24)
+        : 999;
 
-    if (!error) suggested++;
+      if (daysSince < 30 && person.last_contact) continue;
+
+      // Build a lightweight candidate-like context for suggestion generation
+      const pseudoCandidate: EnvoyCandidate = {
+        id: '', user_id: userId,
+        name: person.name,
+        email: person.email?.[0],
+        role: person.occupation || undefined,
+        location: person.location || undefined,
+        pipeline: person.circle === 'professional' ? 'builder' : 'creative',
+        source_pool: 'deep_network',
+        source_detail: `Known contact — closeness ${person.closeness}/5, ${Math.round(daysSince)}d since last contact`,
+        person_id: person.id,
+        shared_interests: person.interests || undefined,
+        their_work: person.occupation || undefined,
+        why_reach_out: `You know them well but haven't connected in ${Math.round(daysSince)} days. Time to catch up.`,
+        what_you_can_offer: person.care_notes || 'Your attention and genuine interest in how they\'re doing.',
+        status: 'approved',
+        priority: person.closeness <= 2 ? 5 : 4,
+        outreach_count: 0,
+        excluded: false,
+        created_at: '', updated_at: '',
+      };
+
+      const suggestion = await generateCoffeeChatSuggestion(pseudoCandidate);
+
+      const { error } = await supabaseAdmin.from('envoy_coffee_chats').insert({
+        user_id: userId,
+        person_id: person.id,
+        participant_name: person.name,
+        participant_role: person.occupation,
+        pipeline: pseudoCandidate.pipeline,
+        why_now: `Deep network — you know them (closeness ${person.closeness}/5) but haven't connected in ${Math.round(daysSince)} days. ${suggestion.why_now}`,
+        suggested_topics: suggestion.topics,
+        your_ask: suggestion.your_ask,
+        status: 'suggested',
+        suggested_for_week: weekStart,
+      });
+
+      if (!error) {
+        suggested++;
+        recentPersonIds.add(person.id);
+      }
+    }
+  }
+
+  // ---- Priority 2: Responded candidates (warm from recent outreach) ----
+  if (suggested < suggestionsNeeded) {
+    const { data: respondedCandidates } = await supabaseAdmin
+      .from('envoy_candidates')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('status', 'responded')
+      .eq('excluded', false)
+      .order('last_response_at', { ascending: false })
+      .limit(suggestionsNeeded * 2);
+
+    if (respondedCandidates) {
+      for (const candidate of respondedCandidates) {
+        if (suggested >= suggestionsNeeded) break;
+        if (recentCandidateIds.has(candidate.id)) continue;
+        if (candidate.person_id && recentPersonIds.has(candidate.person_id)) continue;
+
+        const suggestion = await generateCoffeeChatSuggestion(candidate);
+
+        const { error } = await supabaseAdmin.from('envoy_coffee_chats').insert({
+          user_id: userId,
+          candidate_id: candidate.id,
+          person_id: candidate.person_id,
+          participant_name: candidate.name,
+          participant_role: candidate.role,
+          participant_org: candidate.organization,
+          pipeline: candidate.pipeline,
+          why_now: suggestion.why_now,
+          suggested_topics: suggestion.topics,
+          your_ask: suggestion.your_ask,
+          status: 'suggested',
+          suggested_for_week: weekStart,
+        });
+
+        if (!error) suggested++;
+      }
+    }
+  }
+
+  // ---- Priority 3: Approved/sent candidates (newer connections) ----
+  if (suggested < suggestionsNeeded) {
+    const { data: newCandidates } = await supabaseAdmin
+      .from('envoy_candidates')
+      .select('*')
+      .eq('user_id', userId)
+      .in('status', ['approved', 'sent'])
+      .eq('excluded', false)
+      .order('priority', { ascending: false })
+      .limit(suggestionsNeeded * 2);
+
+    if (newCandidates) {
+      for (const candidate of newCandidates) {
+        if (suggested >= suggestionsNeeded) break;
+        if (recentCandidateIds.has(candidate.id)) continue;
+        if (candidate.person_id && recentPersonIds.has(candidate.person_id)) continue;
+
+        const suggestion = await generateCoffeeChatSuggestion(candidate);
+
+        const { error } = await supabaseAdmin.from('envoy_coffee_chats').insert({
+          user_id: userId,
+          candidate_id: candidate.id,
+          person_id: candidate.person_id,
+          participant_name: candidate.name,
+          participant_role: candidate.role,
+          participant_org: candidate.organization,
+          pipeline: candidate.pipeline,
+          why_now: suggestion.why_now,
+          suggested_topics: suggestion.topics,
+          your_ask: suggestion.your_ask,
+          status: 'suggested',
+          suggested_for_week: weekStart,
+        });
+
+        if (!error) suggested++;
+      }
+    }
   }
 
   return suggested;
@@ -1658,6 +1838,68 @@ export async function discoverCandidates(userId: string): Promise<number> {
       });
 
       if (!error) { discovered++; trackNew(undefined, msg.sender_email, msg.sender_name); }
+    }
+  }
+
+  // ---- Newsletter Warm Leads for Dispatch Invites ----
+  // Find people who'd genuinely enjoy Dispatches but haven't been invited yet
+  const { data: newsletterLeads } = await supabaseAdmin
+    .from('people')
+    .select('*')
+    .eq('user_id', userId)
+    .in('circle', ['professional', 'community', 'friend', 'neighbor']);
+
+  if (newsletterLeads) {
+    const newsletterSignals = [
+      'newsletter', 'substack', 'writing', 'gorge', 'white salmon',
+      'ferment', 'garden', 'agent', 'ai', 'systems',
+      'maker', 'homestead', 'rural', 'land',
+    ];
+
+    for (const person of newsletterLeads) {
+      if (isAlreadyTracked(person.id)) continue;
+
+      // Skip very distant contacts — newsletter invites should feel warm
+      if (person.closeness > 4) continue;
+
+      const text = [
+        person.occupation, person.notes, person.care_notes,
+        person.how_we_met, ...(person.interests || [])
+      ].filter(Boolean).join(' ').toLowerCase();
+
+      const matches = newsletterSignals.filter(k => text.includes(k));
+      if (matches.length === 0) continue;
+
+      // Skip if recently contacted — invite should come at a natural moment
+      const daysSince = person.last_contact
+        ? (Date.now() - new Date(person.last_contact).getTime()) / (1000 * 60 * 60 * 24)
+        : 999;
+
+      // Ideal: people you know but haven't talked to in 14-90 days
+      // Newsletter invite is a natural way to re-establish contact
+      if (daysSince < 14 && person.last_contact) continue;
+
+      const { error } = await supabaseAdmin.from('envoy_candidates').insert({
+        user_id: userId,
+        name: person.name,
+        email: person.email?.[0] || null,
+        role: person.occupation || null,
+        location: person.location || null,
+        pipeline: 'generous',
+        source_pool: 'newsletter_invite',
+        source_detail: `Dispatch invite: ${matches.slice(0, 3).join(', ')} overlap`,
+        person_id: person.id,
+        shared_interests: person.interests || null,
+        why_reach_out: `They'd genuinely enjoy Dispatches — you share interests in ${matches.slice(0, 2).join(' and ')}. A personal invite, not a mass blast.`,
+        what_you_can_offer: 'Share Dispatches from White Salmon. The invite itself is the gift — a window into what you\'re building and thinking about.',
+        warm_path: `Direct — you know them (closeness ${person.closeness}/5)`,
+        status: 'suggested',
+        priority: person.closeness <= 2 ? 4 : person.closeness <= 3 ? 3 : 2,
+        outreach_count: 0,
+        excluded: false,
+      });
+
+      if (!error) { discovered++; trackNew(person.id, person.email?.[0], person.name); }
     }
   }
 

@@ -107,6 +107,13 @@ export default function EnvoyOutreachQueue({ items, onAction }: EnvoyOutreachQue
               </div>
             </div>
 
+            {/* Newsletter invite badge */}
+            {candidate.source_pool === 'newsletter_invite' && (
+              <div className="text-xs text-amber-400/80 bg-amber-400/10 border border-amber-400/20 rounded px-2 py-0.5 inline-block">
+                Dispatch Invite
+              </div>
+            )}
+
             {/* Warm path or shared context */}
             {candidate.warm_path && (
               <div className="text-sm text-green-400/80">
@@ -140,10 +147,20 @@ export default function EnvoyOutreachQueue({ items, onAction }: EnvoyOutreachQue
               </div>
             )}
 
+            {/* Cultivation step */}
+            {outreach.voice_notes?.startsWith('BEFORE SENDING:') && (
+              <div className="text-sm text-amber-300 bg-amber-400/10 border border-amber-400/20 rounded p-3">
+                <span className="font-medium">Cultivation step:</span>{' '}
+                {outreach.voice_notes.split('\n\n')[0].replace('BEFORE SENDING: ', '')}
+              </div>
+            )}
+
             {/* Voice notes */}
             {outreach.voice_notes && (
               <div className="text-xs text-muted italic">
-                {outreach.voice_notes}
+                {outreach.voice_notes.startsWith('BEFORE SENDING:')
+                  ? outreach.voice_notes.split('\n\n').slice(1).join('\n\n')
+                  : outreach.voice_notes}
               </div>
             )}
 

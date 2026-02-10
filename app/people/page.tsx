@@ -9,6 +9,8 @@ export default function PeoplePage() {
   const [people, setPeople] = useState<Person[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [needingContact, setNeedingContact] = useState<number>(0);
+  const [isPopulating, setIsPopulating] = useState(false);
+  const [populateStatus, setPopulateStatus] = useState('');
 
   useEffect(() => {
     fetchPeople();
@@ -37,17 +39,6 @@ export default function PeoplePage() {
     }
   };
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center h-screen">
-        <div className="text-muted">Loading People Database...</div>
-      </div>
-    );
-  }
-
-  const [isPopulating, setIsPopulating] = useState(false);
-  const [populateStatus, setPopulateStatus] = useState('');
-
   const autoPopulate = async () => {
     setIsPopulating(true);
     setPopulateStatus('Scanning emails and classifying senders...');
@@ -71,6 +62,14 @@ export default function PeoplePage() {
       setTimeout(() => setPopulateStatus(''), 10000);
     }
   };
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-screen">
+        <div className="text-muted">Loading People Database...</div>
+      </div>
+    );
+  }
 
   // Group by circle for summary
   const circleCount = people.reduce((acc, p) => {

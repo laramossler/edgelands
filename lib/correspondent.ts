@@ -226,31 +226,21 @@ async function identify(userId: string): Promise<void> {
 
 /** Score each unprocessed message on urgency and importance */
 async function triage(userId: string): Promise<void> {
-  const { data: unprocessed } = await supabaseAdmin
+  // First: batch-update all _LIST messages in one query (no API calls needed)
+  // We use a Postgres array contains check via the labels column
+  const { data: listMessages } = await supabaseAdmin
     .from('correspondent_messages')
-    .select('*, people:person_id(*)')
+    .select('id, labels')
     .eq('user_id', userId)
     .eq('processed', false);
 
-  if (!unprocessed || unprocessed.length === 0) return;
+  if (listMessages && listMessages.length > 0) {
+    const listIds = listMessages
+      .filter(m => (m.labels || []).includes('_LIST'))
+      .map(m => m.id);
 
-  // Sort: _DIRECT first, then _REPLY, then everything else, _LIST last
-  const priority = (msg: any) => {
-    const labels: string[] = msg.labels || [];
-    if (labels.includes('_LIST')) return 99;
-    if (labels.includes('_BULK_CC')) return 80;
-    if (labels.includes('_DIRECT') && labels.includes('_REPLY')) return 0;
-    if (labels.includes('_DIRECT')) return 1;
-    if (labels.includes('_REPLY')) return 2;
-    return 50;
-  };
-  const sorted = [...unprocessed].sort((a, b) => priority(a) - priority(b));
-
-  for (const message of sorted) {
-    const labels: string[] = message.labels || [];
-
-    // Fast-track: skip triage for obvious list/automated messages
-    if (labels.includes('_LIST')) {
+    if (listIds.length > 0) {
+      // Batch update all _LIST messages at once
       await supabaseAdmin
         .from('correspondent_messages')
         .update({
@@ -259,10 +249,32 @@ async function triage(userId: string): Promise<void> {
           triage_summary: 'Automated/list email — skipped',
           processed: true,
         })
-        .eq('id', message.id);
-      continue;
+        .eq('user_id', userId)
+        .in('id', listIds);
     }
+  }
 
+  // Now fetch only non-LIST unprocessed messages for Claude triage
+  const { data: unprocessed } = await supabaseAdmin
+    .from('correspondent_messages')
+    .select('*, people:person_id(*)')
+    .eq('user_id', userId)
+    .eq('processed', false);
+
+  if (!unprocessed || unprocessed.length === 0) return;
+
+  // Sort: _DIRECT+_REPLY first, then _DIRECT, then _REPLY, then everything else
+  const priority = (msg: any) => {
+    const labels: string[] = msg.labels || [];
+    if (labels.includes('_DIRECT') && labels.includes('_REPLY')) return 0;
+    if (labels.includes('_DIRECT')) return 1;
+    if (labels.includes('_REPLY')) return 2;
+    if (labels.includes('_BULK_CC')) return 80;
+    return 50;
+  };
+  const sorted = [...unprocessed].sort((a, b) => priority(a) - priority(b));
+
+  for (const message of sorted) {
     const person = message.people as Person | null;
 
     const triagePrompt = buildTriagePrompt(message, person);
@@ -905,6 +917,12 @@ async function requeueSkipped(userId: string): Promise<void> {
 
 /** Retroactively add synthetic labels to existing messages and re-triage them */
 async function reprocessExisting(userId: string): Promise<number> {
+  // Delete ALL existing drafts for this user in one query
+  await supabaseAdmin
+    .from('correspondent_drafts')
+    .delete()
+    .eq('user_id', userId);
+
   // Get ALL messages for this user
   const { data: messages } = await supabaseAdmin
     .from('correspondent_messages')
@@ -913,12 +931,18 @@ async function reprocessExisting(userId: string): Promise<number> {
 
   if (!messages || messages.length === 0) return 0;
 
-  let updated = 0;
+  // Build a set of thread_ids that have multiple messages (for _USER_THREAD detection)
+  const threadCounts = new Map<string, number>();
+  for (const msg of messages) {
+    if (msg.thread_id) {
+      threadCounts.set(msg.thread_id, (threadCounts.get(msg.thread_id) || 0) + 1);
+    }
+  }
 
+  // Compute new labels for each message
+  const updates: { id: string; labels: string[] }[] = [];
   for (const msg of messages) {
     const existingLabels: string[] = msg.labels || [];
-
-    // Strip any old synthetic labels (start with _) and recompute from scratch
     const gmailLabels = existingLabels.filter(l => !l.startsWith('_'));
     const labels = [...gmailLabels];
 
@@ -927,57 +951,43 @@ async function reprocessExisting(userId: string): Promise<number> {
       gmailLabels.includes('CATEGORY_PROMOTIONS') ||
       gmailLabels.includes('CATEGORY_SOCIAL');
 
-    // Infer list/direct from what we know
     if (senderIsAutomated || isGmailAutomated) {
       labels.push('_LIST');
     } else {
-      // Without recipient headers, assume direct if not automated
       labels.push('_DIRECT');
     }
 
-    // Check for reply signals — subject starting with Re:
     if (msg.subject && /^(re|fwd|fw):/i.test(msg.subject)) {
       labels.push('_REPLY');
     }
 
-    // Check if user has sent in this thread
-    if (msg.thread_id) {
-      const { data: threadMsgs } = await supabaseAdmin
-        .from('correspondent_messages')
-        .select('id')
-        .eq('thread_id', msg.thread_id)
-        .eq('user_id', userId)
-        .neq('id', msg.id)
-        .limit(1);
-
-      if (threadMsgs && threadMsgs.length > 0) {
-        labels.push('_USER_THREAD');
-      }
+    if (msg.thread_id && (threadCounts.get(msg.thread_id) || 0) > 1) {
+      labels.push('_USER_THREAD');
     }
 
-    // Update labels and reset processing
-    await supabaseAdmin
-      .from('correspondent_messages')
-      .update({
-        labels,
-        processed: false,
-        urgency: 0,
-        importance: 0,
-        triage_summary: null,
-      })
-      .eq('id', msg.id);
-
-    // Delete any existing drafts for this message (all statuses)
-    await supabaseAdmin
-      .from('correspondent_drafts')
-      .delete()
-      .eq('message_id', msg.id)
-      .eq('user_id', userId);
-
-    updated++;
+    updates.push({ id: msg.id, labels });
   }
 
-  return updated;
+  // Batch reset: mark all messages as unprocessed in one query
+  await supabaseAdmin
+    .from('correspondent_messages')
+    .update({
+      processed: false,
+      urgency: 0,
+      importance: 0,
+      triage_summary: null,
+    })
+    .eq('user_id', userId);
+
+  // Update labels individually (need different labels per message, but much fewer total queries now)
+  for (const u of updates) {
+    await supabaseAdmin
+      .from('correspondent_messages')
+      .update({ labels: u.labels })
+      .eq('id', u.id);
+  }
+
+  return updates.length;
 }
 
 // ============================================================

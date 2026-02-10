@@ -13,6 +13,7 @@ import { supabaseAdmin } from '@/lib/supabase';
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const autoFix = searchParams.get('fix') === 'true';
+  const filterDirect = searchParams.get('filter') === 'direct';
 
   const diagnostics: Record<string, any> = {
     timestamp: new Date().toISOString(),
@@ -225,16 +226,26 @@ export async function GET(request: NextRequest) {
 
   // Check 7: Existing messages in DB — full inventory
   try {
-    const { data: dbMessages, count } = await supabaseAdmin
+    // Get all messages and filter in JS (Supabase doesn't support array-contains easily)
+    const { data: allDbMessages, count } = await supabaseAdmin
       .from('correspondent_messages')
       .select('id, sender_email, sender_name, subject, labels, processed, urgency, importance, triage_summary, received_at', { count: 'exact' })
       .eq('user_id', userId)
       .order('received_at', { ascending: false })
-      .limit(30);
+      .limit(200);
+
+    let filtered = allDbMessages || [];
+    if (filterDirect) {
+      filtered = filtered.filter(m =>
+        (m.labels || []).includes('_DIRECT') || !(m.labels || []).some((l: string) => l.startsWith('_'))
+      );
+    }
 
     diagnostics.checks.db_messages = {
       count: count || 0,
-      messages: (dbMessages || []).map(m => ({
+      shown: filtered.length,
+      filter: filterDirect ? '_DIRECT only' : 'all (latest 200)',
+      messages: filtered.slice(0, 50).map(m => ({
         id: m.id,
         sender: `${m.sender_name || ''} <${m.sender_email || ''}>`,
         subject: m.subject,

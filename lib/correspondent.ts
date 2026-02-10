@@ -226,68 +226,86 @@ async function identify(userId: string): Promise<void> {
 
 /** Score each unprocessed message on urgency and importance */
 async function triage(userId: string): Promise<void> {
-  // First: batch-update all _LIST messages in one query (no API calls needed)
-  // We use a Postgres array contains check via the labels column
-  const { data: listMessages } = await supabaseAdmin
+  // Step 1: Get all unprocessed messages
+  const { data: allUnprocessed } = await supabaseAdmin
     .from('correspondent_messages')
-    .select('id, labels')
+    .select('id, labels, sender_email')
     .eq('user_id', userId)
     .eq('processed', false);
 
-  if (listMessages && listMessages.length > 0) {
-    const listIds = listMessages
-      .filter(m => (m.labels || []).includes('_LIST'))
-      .map(m => m.id);
+  if (!allUnprocessed || allUnprocessed.length === 0) return;
 
-    if (listIds.length > 0) {
-      // Batch update all _LIST messages at once
-      await supabaseAdmin
-        .from('correspondent_messages')
-        .update({
-          urgency: 0,
-          importance: 0,
-          triage_summary: 'Automated/list email — skipped',
-          processed: true,
-        })
-        .eq('user_id', userId)
-        .in('id', listIds);
+  // Step 2: Separate into skip vs. needs-triage using BOTH labels AND sender patterns
+  const skipIds: string[] = [];
+  const triageIds: string[] = [];
+
+  for (const msg of allUnprocessed) {
+    const labels: string[] = msg.labels || [];
+    const isList = labels.includes('_LIST') || isAutomatedSender(msg.sender_email || '');
+    const isGmailAuto = labels.includes('CATEGORY_UPDATES') ||
+      labels.includes('CATEGORY_PROMOTIONS') ||
+      labels.includes('CATEGORY_SOCIAL');
+
+    if (isList || isGmailAuto) {
+      skipIds.push(msg.id);
+    } else {
+      triageIds.push(msg.id);
     }
   }
 
-  // Now fetch only non-LIST unprocessed messages for Claude triage
-  const { data: unprocessed } = await supabaseAdmin
+  // Step 3: Batch-skip all automated messages (chunked for large sets)
+  for (let i = 0; i < skipIds.length; i += 50) {
+    const chunk = skipIds.slice(i, i + 50);
+    await supabaseAdmin
+      .from('correspondent_messages')
+      .update({
+        urgency: 0,
+        importance: 0,
+        triage_summary: 'Automated/list email — skipped',
+        processed: true,
+      })
+      .in('id', chunk);
+  }
+
+  console.log(`[Triage] Skipped ${skipIds.length} automated, triaging ${triageIds.length} personal messages`);
+
+  if (triageIds.length === 0) return;
+
+  // Step 4: Fetch full message data for personal messages only (cap at 25 per run)
+  const { data: toTriage } = await supabaseAdmin
     .from('correspondent_messages')
     .select('*, people:person_id(*)')
-    .eq('user_id', userId)
-    .eq('processed', false);
+    .in('id', triageIds.slice(0, 25));
 
-  if (!unprocessed || unprocessed.length === 0) return;
+  if (!toTriage || toTriage.length === 0) return;
 
-  // Sort: _DIRECT+_REPLY first, then _DIRECT, then _REPLY, then everything else
+  // Sort: replies first, then direct, then everything else
   const priority = (msg: any) => {
     const labels: string[] = msg.labels || [];
-    if (labels.includes('_DIRECT') && labels.includes('_REPLY')) return 0;
-    if (labels.includes('_DIRECT')) return 1;
-    if (labels.includes('_REPLY')) return 2;
-    if (labels.includes('_BULK_CC')) return 80;
+    const isReply = labels.includes('_REPLY') || (msg.subject && /^(re|fwd|fw):/i.test(msg.subject));
+    const isDirect = labels.includes('_DIRECT') || !isAutomatedSender(msg.sender_email || '');
+    if (isDirect && isReply) return 0;
+    if (isDirect) return 1;
+    if (isReply) return 2;
     return 50;
   };
-  const sorted = [...unprocessed].sort((a, b) => priority(a) - priority(b));
+  const sorted = [...toTriage].sort((a, b) => priority(a) - priority(b));
 
+  // Step 5: Triage each message with Claude (sequential to avoid rate limits)
   for (const message of sorted) {
     const person = message.people as Person | null;
 
-    const triagePrompt = buildTriagePrompt(message, person);
-
-    const response = await getAnthropic().messages.create({
-      model: 'claude-3-5-haiku-20241022',
-      max_tokens: 512,
-      messages: [{ role: 'user', content: triagePrompt }],
-    });
-
-    const resultText = response.content[0].type === 'text' ? response.content[0].text : '{}';
-
     try {
+      const triagePrompt = buildTriagePrompt(message, person);
+
+      const response = await getAnthropic().messages.create({
+        model: 'claude-3-5-haiku-20241022',
+        max_tokens: 512,
+        messages: [{ role: 'user', content: triagePrompt }],
+      });
+
+      const resultText = response.content[0].type === 'text' ? response.content[0].text : '{}';
+
       const result: TriageResult = JSON.parse(
         resultText.replace(/```json\n?|\n?```/g, '').trim()
       );
@@ -300,8 +318,11 @@ async function triage(userId: string): Promise<void> {
           triage_summary: result.summary,
         })
         .eq('id', message.id);
-    } catch {
-      // Default to moderate scores on parse failure
+
+      console.log(`[Triage] ${message.sender_name}: urgency=${result.urgency} importance=${result.importance}`);
+    } catch (err) {
+      // Default to moderate scores on failure so the message still gets drafted
+      console.error(`[Triage] Error triaging ${message.sender_email}:`, err);
       await supabaseAdmin
         .from('correspondent_messages')
         .update({
@@ -410,13 +431,19 @@ async function draft(userId: string): Promise<number> {
     .eq('processed', false)
     .not('triage_summary', 'is', null);
 
-  if (!messages || messages.length === 0) return 0;
+  if (!messages || messages.length === 0) {
+    console.log('[Draft] No triaged messages waiting for drafts');
+    return 0;
+  }
+
+  console.log(`[Draft] Processing ${messages.length} triaged messages`);
 
   for (const message of messages) {
     const person = message.people as Person | null;
 
     // Determine draft tier from triage scores
     const draftTier = determineDraftTier(message);
+    console.log(`[Draft] ${message.sender_name || message.sender_email}: tier=${draftTier} (urgency=${message.urgency} importance=${message.importance})`);
 
     if (draftTier === 'no_reply') {
       // Mark as processed, no draft needed
@@ -472,7 +499,12 @@ async function draft(userId: string): Promise<number> {
         importance: message.importance,
       });
 
-      if (!error) draftsGenerated++;
+      if (error) {
+        console.error(`[Draft] Failed to save draft for ${message.sender_email}:`, error.message);
+      } else {
+        draftsGenerated++;
+        console.log(`[Draft] Saved draft for ${message.sender_name || message.sender_email}`);
+      }
     }
 
     // Mark message as processed
@@ -1029,28 +1061,38 @@ export async function runPipeline(userId: string, reprocess = false): Promise<Co
   const runId = run?.id;
 
   try {
+    const t0 = Date.now();
+
     // Re-queue any skipped drafts from yesterday
     await requeueSkipped(userId);
 
     // Reprocess existing messages if requested (retroactive label fix)
     if (reprocess) {
       const reprocessed = await reprocessExisting(userId);
-      console.log(`[Correspondent] Reprocessed ${reprocessed} existing messages with new triage signals`);
+      console.log(`[Pipeline] Reprocessed ${reprocessed} messages in ${Date.now() - t0}ms`);
     }
 
     // Stage 1: Ingest
+    const t1 = Date.now();
     const ingestResult = await ingest(userId);
     const messagesIngested = ingestResult.ingested;
-    console.log('[Correspondent] Ingest:', ingestResult.debug);
+    console.log(`[Pipeline] Ingest: ${messagesIngested} new messages in ${Date.now() - t1}ms — ${ingestResult.debug}`);
 
     // Stage 2: Identify
+    const t2 = Date.now();
     await identify(userId);
+    console.log(`[Pipeline] Identify completed in ${Date.now() - t2}ms`);
 
     // Stage 3: Triage
+    const t3 = Date.now();
     await triage(userId);
+    console.log(`[Pipeline] Triage completed in ${Date.now() - t3}ms`);
 
     // Stage 4: Draft
+    const t4 = Date.now();
     const draftsGenerated = await draft(userId);
+    console.log(`[Pipeline] Draft: ${draftsGenerated} drafts generated in ${Date.now() - t4}ms`);
+    console.log(`[Pipeline] Total pipeline time: ${Date.now() - t0}ms`);
 
     // Count total processed
     const { count: messagesProcessed } = await supabaseAdmin

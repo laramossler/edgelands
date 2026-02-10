@@ -60,6 +60,8 @@ function isAutomatedSender(email: string): boolean {
     'billing@', 'receipts@', 'receipt@',
     'events@', 'contact@', 'messages+',
     'customer_success@', 'customerservice@',
+    'support@', 'help@', 'info@', 'hello@', 'team@',
+    'admin@', 'service@', 'orders@', 'feedback@',
   ];
   if (automatedPrefixes.some(p => lower.startsWith(p))) return true;
 
@@ -73,6 +75,7 @@ function isAutomatedSender(email: string): boolean {
     'squarespace.com', 'squaremktg.com', 'amazon.com',
     'capitalone.com', 'uber.com', 'etsy.com',
     'garmin.com', 'dreamstime.com',
+    'replit.com', 'notion.so', 'slack.com', 'atlassian.com',
   ];
   const domain = lower.split('@')[1];
   if (domain && autoDomains.some(d => domain.endsWith(d))) return true;
@@ -420,8 +423,12 @@ Respond with ONLY a JSON object:
 // ============================================================
 
 /** Generate reply drafts for messages that need them */
-async function draft(userId: string): Promise<number> {
+async function draft(userId: string, pipelineStartTime?: number): Promise<number> {
   let draftsGenerated = 0;
+  const MAX_DRAFTS_PER_RUN = 5;
+  // If we know when the pipeline started, bail before Vercel kills us
+  const TIMEOUT_BUFFER_MS = 15_000; // stop 15s before hard limit
+  const MAX_RUNTIME_MS = 55_000; // assume 60s max function duration
 
   // Get triaged but unprocessed messages that need a reply
   const { data: messages } = await supabaseAdmin
@@ -429,89 +436,127 @@ async function draft(userId: string): Promise<number> {
     .select('*, people:person_id(*)')
     .eq('user_id', userId)
     .eq('processed', false)
-    .not('triage_summary', 'is', null);
+    .not('triage_summary', 'is', null)
+    .order('importance', { ascending: false })
+    .order('urgency', { ascending: false });
 
   if (!messages || messages.length === 0) {
     console.log('[Draft] No triaged messages waiting for drafts');
     return 0;
   }
 
-  console.log(`[Draft] Processing ${messages.length} triaged messages`);
+  console.log(`[Draft] Found ${messages.length} triaged messages, processing up to ${MAX_DRAFTS_PER_RUN}`);
+
+  // First pass: mark no_reply messages as processed in bulk
+  const noReplyIds: string[] = [];
+  const toDraft: typeof messages = [];
 
   for (const message of messages) {
-    const person = message.people as Person | null;
-
-    // Determine draft tier from triage scores
     const draftTier = determineDraftTier(message);
-    console.log(`[Draft] ${message.sender_name || message.sender_email}: tier=${draftTier} (urgency=${message.urgency} importance=${message.importance})`);
-
     if (draftTier === 'no_reply') {
-      // Mark as processed, no draft needed
+      noReplyIds.push(message.id);
+      console.log(`[Draft] ${message.sender_name || message.sender_email}: no_reply — skipping`);
+    } else {
+      toDraft.push(message);
+    }
+  }
+
+  // Batch-skip no_reply messages
+  if (noReplyIds.length > 0) {
+    for (let i = 0; i < noReplyIds.length; i += 50) {
+      await supabaseAdmin
+        .from('correspondent_messages')
+        .update({ processed: true })
+        .in('id', noReplyIds.slice(i, i + 50));
+    }
+    console.log(`[Draft] Batch-skipped ${noReplyIds.length} no_reply messages`);
+  }
+
+  // Second pass: generate drafts for top messages (capped)
+  const batch = toDraft.slice(0, MAX_DRAFTS_PER_RUN);
+  console.log(`[Draft] Drafting ${batch.length} messages (${toDraft.length - batch.length} deferred to next run)`);
+
+  for (const message of batch) {
+    // Timeout guard: check if we're running out of time
+    if (pipelineStartTime) {
+      const elapsed = Date.now() - pipelineStartTime;
+      if (elapsed > MAX_RUNTIME_MS - TIMEOUT_BUFFER_MS) {
+        console.log(`[Draft] Timeout guard: ${elapsed}ms elapsed, stopping to preserve progress (${draftsGenerated} drafts saved)`);
+        break;
+      }
+    }
+
+    const person = message.people as Person | null;
+    const draftTier = determineDraftTier(message);
+    console.log(`[Draft] ${message.sender_name || message.sender_email}: tier=${draftTier} (u=${message.urgency} i=${message.importance})`);
+
+    try {
+      // Build relationship context
+      const relationshipContext = person ? await buildRelationshipContext(person) : 'Unknown sender — no relationship context available.';
+
+      // Get voice samples for this circle
+      const voiceSamples = await getVoiceSamples(userId, person?.circle || null);
+
+      // Get thread context if this is part of a conversation
+      const threadContext = await getThreadContext(userId, message.thread_id);
+
+      // Get learned style refinements from feedback loop
+      const refinements = await getRefinementsForDraft(
+        userId,
+        person?.circle || null,
+        person?.id || null
+      );
+
+      // Generate draft
+      const draftResult = await generateDraft(
+        message,
+        person,
+        relationshipContext,
+        voiceSamples,
+        threadContext,
+        draftTier,
+        refinements
+      );
+
+      if (draftResult) {
+        // Insert draft
+        const { error } = await supabaseAdmin.from('correspondent_drafts').insert({
+          user_id: userId,
+          message_id: message.id,
+          person_id: person?.id || null,
+          channel: message.channel,
+          subject: draftResult.subject || (message.subject ? `Re: ${message.subject}` : undefined),
+          body: draftResult.body,
+          draft_tier: draftTier,
+          relationship_context: relationshipContext,
+          thread_context: threadContext,
+          voice_notes: draftResult.voice_notes,
+          status: 'pending',
+          urgency: message.urgency,
+          importance: message.importance,
+        });
+
+        if (error) {
+          console.error(`[Draft] Failed to save draft for ${message.sender_email}:`, error.message);
+        } else {
+          draftsGenerated++;
+          console.log(`[Draft] Saved draft for ${message.sender_name || message.sender_email}`);
+        }
+      }
+
+      // Mark message as processed immediately (preserves progress on timeout)
       await supabaseAdmin
         .from('correspondent_messages')
         .update({ processed: true })
         .eq('id', message.id);
-      continue;
+    } catch (err) {
+      console.error(`[Draft] Error drafting for ${message.sender_email}:`, err);
+      // Still mark as processed to avoid infinite retry loops
+      await supabaseAdmin
+        .from('correspondent_messages')
+        .update({ processed: true })
+        .eq('id', message.id);
     }
-
-    // Build relationship context
-    const relationshipContext = person ? await buildRelationshipContext(person) : 'Unknown sender — no relationship context available.';
-
-    // Get voice samples for this circle
-    const voiceSamples = await getVoiceSamples(userId, person?.circle || null);
-
-    // Get thread context if this is part of a conversation
-    const threadContext = await getThreadContext(userId, message.thread_id);
-
-    // Get learned style refinements from feedback loop
-    const refinements = await getRefinementsForDraft(
-      userId,
-      person?.circle || null,
-      person?.id || null
-    );
-
-    // Generate draft
-    const draftResult = await generateDraft(
-      message,
-      person,
-      relationshipContext,
-      voiceSamples,
-      threadContext,
-      draftTier,
-      refinements
-    );
-
-    if (draftResult) {
-      // Insert draft
-      const { error } = await supabaseAdmin.from('correspondent_drafts').insert({
-        user_id: userId,
-        message_id: message.id,
-        person_id: person?.id || null,
-        channel: message.channel,
-        subject: draftResult.subject || (message.subject ? `Re: ${message.subject}` : undefined),
-        body: draftResult.body,
-        draft_tier: draftTier,
-        relationship_context: relationshipContext,
-        thread_context: threadContext,
-        voice_notes: draftResult.voice_notes,
-        status: 'pending',
-        urgency: message.urgency,
-        importance: message.importance,
-      });
-
-      if (error) {
-        console.error(`[Draft] Failed to save draft for ${message.sender_email}:`, error.message);
-      } else {
-        draftsGenerated++;
-        console.log(`[Draft] Saved draft for ${message.sender_name || message.sender_email}`);
-      }
-    }
-
-    // Mark message as processed
-    await supabaseAdmin
-      .from('correspondent_messages')
-      .update({ processed: true })
-      .eq('id', message.id);
   }
 
   // Assign queue positions (urgent+important first)
@@ -1090,7 +1135,7 @@ export async function runPipeline(userId: string, reprocess = false): Promise<Co
 
     // Stage 4: Draft
     const t4 = Date.now();
-    const draftsGenerated = await draft(userId);
+    const draftsGenerated = await draft(userId, t0);
     console.log(`[Pipeline] Draft: ${draftsGenerated} drafts generated in ${Date.now() - t4}ms`);
     console.log(`[Pipeline] Total pipeline time: ${Date.now() - t0}ms`);
 

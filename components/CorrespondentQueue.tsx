@@ -12,25 +12,53 @@ interface CorrespondentQueueProps {
 function extractDraftBody(body: string): string {
   if (!body) return '';
   const trimmed = body.trim();
-  // If it looks like JSON, try to parse and extract the body field
-  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-    try {
-      const parsed = JSON.parse(trimmed);
-      if (parsed.body) return parsed.body;
-    } catch {
-      // Not valid JSON, use as-is
+
+  // Strip markdown code fences
+  const cleaned = trimmed.replace(/```json\n?|\n?```/g, '').trim();
+
+  // Try direct JSON parse first
+  try {
+    const parsed = JSON.parse(cleaned);
+    if (parsed.body) return parsed.body;
+  } catch {
+    // Not clean JSON
+  }
+
+  // Find first { and its matching } — handles extra text after JSON
+  const start = cleaned.indexOf('{');
+  if (start !== -1) {
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    for (let i = start; i < cleaned.length; i++) {
+      const ch = cleaned[i];
+      if (esc) { esc = false; continue; }
+      if (ch === '\\' && inStr) { esc = true; continue; }
+      if (ch === '"' && !esc) { inStr = !inStr; continue; }
+      if (!inStr) {
+        if (ch === '{') depth++;
+        if (ch === '}') {
+          depth--;
+          if (depth === 0) {
+            try {
+              const parsed = JSON.parse(cleaned.substring(start, i + 1));
+              if (parsed.body) return parsed.body;
+            } catch {
+              // malformed JSON
+            }
+            break;
+          }
+        }
+      }
     }
   }
-  // Also handle JSON wrapped in markdown code blocks
-  const jsonMatch = trimmed.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
-  if (jsonMatch) {
-    try {
-      const parsed = JSON.parse(jsonMatch[1].trim());
-      if (parsed.body) return parsed.body;
-    } catch {
-      // Not valid JSON
-    }
+
+  // Try regex for "body": "..." pattern
+  const bodyMatch = body.match(/"body"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  if (bodyMatch) {
+    return bodyMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
   }
+
   return body;
 }
 

@@ -648,6 +648,84 @@ async function getThreadContext(userId: string, threadId: string | null): Promis
     .join('\n');
 }
 
+/** Extract a JSON object from text that may contain extra commentary */
+function extractJSON(text: string): any | null {
+  // Strip markdown code fences
+  let cleaned = text.replace(/```json\n?|\n?```/g, '').trim();
+
+  // Try parsing the whole thing first
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    // ignore
+  }
+
+  // Find the first { and its matching closing }
+  const start = cleaned.indexOf('{');
+  if (start === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+
+  for (let i = start; i < cleaned.length; i++) {
+    const ch = cleaned[i];
+
+    if (escape) {
+      escape = false;
+      continue;
+    }
+
+    if (ch === '\\' && inString) {
+      escape = true;
+      continue;
+    }
+
+    if (ch === '"' && !escape) {
+      inString = !inString;
+      continue;
+    }
+
+    if (!inString) {
+      if (ch === '{') depth++;
+      if (ch === '}') {
+        depth--;
+        if (depth === 0) {
+          try {
+            return JSON.parse(cleaned.substring(start, i + 1));
+          } catch {
+            return null;
+          }
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+/** Extract the plain-text email body from a draft, handling JSON or raw text */
+function extractDraftBody(body: string): string {
+  if (!body) return '';
+
+  // If it looks like JSON, try to extract the body field
+  const trimmed = body.trim();
+  if (trimmed.startsWith('{') || trimmed.startsWith('```')) {
+    const parsed = extractJSON(trimmed);
+    if (parsed && parsed.body) {
+      return parsed.body;
+    }
+  }
+
+  // If body contains "body": " pattern, it's probably broken JSON in text
+  const bodyMatch = body.match(/"body"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  if (bodyMatch) {
+    return bodyMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+  }
+
+  return body;
+}
+
 async function generateDraft(
   message: CorrespondentMessage,
   person: Person | null,
@@ -667,8 +745,11 @@ async function generateDraft(
     draftTier
   );
 
-  const model = draftTier === 'full_draft' ? 'claude-3-5-sonnet-20241022' : 'claude-3-5-haiku-20241022';
+  // Use current model IDs
+  const model = draftTier === 'full_draft' ? 'claude-sonnet-4-5-20250929' : 'claude-haiku-4-5-20251001';
   const maxTokens = draftTier === 'full_draft' ? 2048 : 512;
+
+  console.log(`[Draft] Calling ${model} for ${message.sender_name || message.sender_email} (${draftTier})`);
 
   const response = await getAnthropic().messages.create({
     model,
@@ -678,47 +759,63 @@ async function generateDraft(
   });
 
   const resultText = response.content[0].type === 'text' ? response.content[0].text : '';
+  console.log(`[Draft] Raw response (first 200 chars): ${resultText.substring(0, 200)}`);
 
-  try {
-    const parsed = JSON.parse(
-      resultText.replace(/```json\n?|\n?```/g, '').trim()
-    );
+  // Try to parse as JSON (handles extra text after JSON object)
+  const parsed = extractJSON(resultText);
+
+  if (parsed && parsed.body) {
     return {
-      body: parsed.body || resultText,
-      subject: parsed.subject,
+      body: parsed.body,
+      subject: parsed.subject || null,
       voice_notes: parsed.voice_notes || '',
       confidence: parsed.confidence || 0.5,
     };
-  } catch {
-    // If parsing fails, use the raw text as the draft body
+  }
+
+  // Fallback: if Claude returned plain text instead of JSON, use it directly
+  // But strip any obvious JSON artifacts or meta-commentary
+  const plainBody = resultText
+    .replace(/```json\n?|\n?```/g, '')
+    .replace(/^(Here'?s?|Note|I've|This)\s.*$/gm, '') // strip meta lines
+    .trim();
+
+  if (plainBody.length > 10) {
+    console.log(`[Draft] JSON parse failed, using cleaned plain text`);
     return {
-      body: resultText,
-      voice_notes: 'Generated as raw text — JSON parsing failed',
+      body: plainBody,
+      voice_notes: 'JSON parsing failed — used plain text fallback',
       confidence: 0.3,
     };
   }
+
+  console.error(`[Draft] Could not extract usable draft from response`);
+  return null;
 }
 
 function buildDraftSystemPrompt(voiceSamples: string[], draftTier: DraftTier, refinements: string[] = []): string {
-  let prompt = `You are the Correspondent, a drafting agent that writes replies in the user's voice. You are NOT an AI assistant — you are ghostwriting as a specific person based on their writing patterns.
+  let prompt = `You are the Correspondent, a drafting agent that writes replies in the user's voice. You are ghostwriting as Lara — a real person, not an AI assistant.
 
-Key principles:
-- Sound like the user, not like a polite AI. Study the voice samples carefully.
-- Never fabricate facts. If you are unsure about something, flag it with [VERIFY: ...].
-- Match the tone to the relationship: warmer for family, more precise for professional contacts.
-- Be concise. The user values brevity and substance over pleasantries.
-- Never use corporate language, buzzwords, or excessive formality unless the voice samples show it.
+CRITICAL RULES:
+- Sound like a real human texting/emailing. NOT like ChatGPT.
+- No "I hope this email finds you well." No "Thank you for reaching out." No "I wanted to follow up on..."
+- No exclamation-point enthusiasm unless the voice samples show it.
+- Never fabricate facts. If unsure, flag it with [VERIFY: ...].
+- Be direct. Say what you mean. The user hates fluff.
+- Match warmth to the relationship: casual and loving for family/close friends, straightforward for professional.
+- When responding to a question, answer it. Don't restate it.
+- Keep it short. Most emails should be 1-5 sentences.
 `;
 
   if (draftTier === 'quick_reply') {
-    prompt += `\nThis is a QUICK REPLY — keep it to 1-3 sentences. Just acknowledge, confirm, or briefly respond.\n`;
+    prompt += `\nThis is a QUICK REPLY — 1-3 sentences max. Just the response, nothing extra.\n`;
   } else if (draftTier === 'full_draft') {
-    prompt += `\nThis is a FULL DRAFT — write a complete, substantive reply that addresses all points in the original message.\n`;
+    prompt += `\nThis is a FULL DRAFT — address the key points in the message, but still keep it natural and concise. Don't pad it out.\n`;
   }
 
   // Include learned style refinements from the feedback loop
   if (refinements.length > 0) {
-    prompt += `\nLEARNED STYLE RULES — the user has previously corrected drafts. Follow these rules strictly:\n`;
+    prompt += `\nLEARNED STYLE RULES (from previous corrections — follow strictly):\n`;
     for (const r of refinements) {
       prompt += `- ${r}\n`;
     }
@@ -726,13 +823,13 @@ Key principles:
   }
 
   if (voiceSamples.length > 0) {
-    prompt += `\nVOICE SAMPLES — these are examples of how the user actually writes. Match this style:\n`;
+    prompt += `\nVOICE SAMPLES — this is how Lara actually writes. Match this voice exactly:\n`;
     prompt += '---\n';
     for (const sample of voiceSamples.slice(0, 5)) {
       prompt += sample.substring(0, 500) + '\n---\n';
     }
   } else {
-    prompt += `\nNo voice samples available yet. Write in a natural, warm but concise tone. Avoid AI-sounding language.\n`;
+    prompt += `\nNo voice samples available yet. Write in a natural, warm but concise tone. Think "how would a real person dash off this email" — not "how would a professional email template look."\n`;
   }
 
   return prompt;
@@ -745,29 +842,27 @@ function buildDraftUserPrompt(
   threadContext: string,
   draftTier: DraftTier
 ): string {
-  let prompt = `Draft a reply to this message.
+  let prompt = `Draft a reply to this message as Lara.
 
 FROM: ${message.sender_name || 'Unknown'} <${message.sender_email || ''}>
 SUBJECT: ${message.subject || '(none)'}
 RECEIVED: ${new Date(message.received_at).toLocaleDateString()}
 
-RELATIONSHIP CONTEXT:
+RELATIONSHIP:
 ${relationshipContext}
 `;
 
   if (threadContext) {
-    prompt += `\nTHREAD HISTORY:\n${threadContext}\n`;
+    prompt += `\nPREVIOUS MESSAGES IN THREAD:\n${threadContext}\n`;
   }
 
-  prompt += `\nMESSAGE BODY:\n${message.body.substring(0, 3000)}\n`;
+  prompt += `\nTHEIR MESSAGE:\n${message.body.substring(0, 3000)}\n`;
 
-  prompt += `\nRespond with a JSON object:
-{
-  "body": "<the draft reply text>",
-  "subject": "<reply subject line, or null to use Re: original>",
-  "voice_notes": "<brief note about tone/style choices you made>",
-  "confidence": <0.0-1.0 how confident you are this sounds right>
-}`;
+  prompt += `
+IMPORTANT: Respond with ONLY a JSON object — no text before or after it. No markdown fences. Just the raw JSON.
+{"body": "the actual email reply text", "subject": null, "voice_notes": "brief note on tone", "confidence": 0.8}
+
+The "body" field should contain ONLY the email text that will be sent — no JSON, no metadata, no explanations. Write it exactly as it should appear in the recipient's inbox.`;
 
   return prompt;
 }
@@ -869,6 +964,10 @@ export async function approveDraft(userId: string, draftId: string): Promise<boo
   const message = draft.correspondent_messages as any;
   const person = draft.people as Person | null;
 
+  // Extract clean body — handles case where body is stored as JSON string
+  const rawBody = draft.edited_body || draft.body;
+  const cleanBody = extractDraftBody(rawBody);
+
   // Send via the appropriate channel
   let sent = false;
   if (draft.channel === 'email' && message.sender_email) {
@@ -877,7 +976,7 @@ export async function approveDraft(userId: string, draftId: string): Promise<boo
       userId,
       message.sender_email,
       draft.subject || `Re: ${message.subject || ''}`,
-      draft.edited_body || draft.body,
+      cleanBody,
       message.thread_id
     );
   }
@@ -910,7 +1009,7 @@ export async function approveDraft(userId: string, draftId: string): Promise<boo
       person_id: person?.id || null,
       circle: person?.circle || null,
       channel: draft.channel,
-      content: draft.edited_body || draft.body,
+      content: cleanBody,
       sent_at: new Date().toISOString(),
     });
 

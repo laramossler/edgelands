@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import CorrespondentQueue from '@/components/CorrespondentQueue';
 import Link from 'next/link';
@@ -54,6 +54,18 @@ function getGreeting() {
 }
 
 export default function CorrespondentPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-paper flex items-center justify-center">
+        <div className="font-mono text-[9px] tracking-[4px] uppercase text-accent-soft">Loading dispatch...</div>
+      </div>
+    }>
+      <CorrespondentPageInner />
+    </Suspense>
+  );
+}
+
+function CorrespondentPageInner() {
   const searchParams = useSearchParams();
   const justConnected = searchParams.get('connected') === 'true';
 
@@ -89,7 +101,7 @@ export default function CorrespondentPage() {
     }
   };
 
-  const handleAction = async (draftId: string, action: 'send' | 'edit' | 'skip' | 'defer', editedBody?: string) => {
+  const handleAction = async (draftId: string, action: 'send' | 'edit' | 'skip' | 'defer' | 'mute_sender' | 'not_important', editedBody?: string) => {
     try {
       const response = await fetch('/api/correspondent/action', {
         method: 'POST',

@@ -26,7 +26,11 @@ export async function POST(request: NextRequest) {
 
     const userId = process.env.DEFAULT_USER_ID || 'placeholder-user-id';
 
-    const result = await runPipeline(userId);
+    // Check if reprocess is requested (re-triages all existing messages)
+    const body = await request.json().catch(() => ({}));
+    const reprocess = body?.reprocess === true;
+
+    const result = await runPipeline(userId, reprocess);
 
     return NextResponse.json({
       status: result.status,
@@ -35,6 +39,8 @@ export async function POST(request: NextRequest) {
       drafts_generated: result.drafts_generated,
       error: result.error,
       completed_at: result.completed_at,
+      reprocessed: reprocess,
+      debug: (result as any).debug,
     });
   } catch (error) {
     console.error('Correspondent process error:', error);

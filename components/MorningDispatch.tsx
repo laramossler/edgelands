@@ -45,13 +45,37 @@ function getGreeting() {
   return 'Good evening.';
 }
 
-export default function MorningDispatch() {
+function getSubGreeting(pending: number, lastRun?: CorrespondentRun, gmailConnected?: boolean) {
+  if (!gmailConnected) return 'Connect your email to begin.';
+  if (!lastRun) return 'Run your first dispatch to see what\'s waiting.';
+
+  const lastRunTime = new Date(lastRun.completed_at || lastRun.started_at);
+  const hoursSinceRun = (Date.now() - lastRunTime.getTime()) / (1000 * 60 * 60);
+
+  if (pending > 0) {
+    if (pending === 1) return 'One message awaits your attention.';
+    if (pending <= 3) return `${pending} messages await your attention.`;
+    return `${pending} messages are waiting. Take your time.`;
+  }
+
+  // No pending messages
+  if (hoursSinceRun < 1) return 'Your correspondence is settled.';
+  if (hoursSinceRun < 6) return 'All clear since your last check.';
+  if (hoursSinceRun < 24) return 'Quiet since this morning. Fetch new mail when ready.';
+  return 'It\'s been a while. Fetch new mail to see what\'s come in.';
+}
+
+interface MorningDispatchProps {
+  justConnected?: boolean;
+}
+
+export default function MorningDispatch({ justConnected }: MorningDispatchProps) {
   const [queue, setQueue] = useState<QueueData | null>(null);
   const [config, setConfig] = useState<ConfigData | null>(null);
   const [metrics, setMetrics] = useState<FeedbackMetrics | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [statusMessage, setStatusMessage] = useState('');
+  const [statusMessage, setStatusMessage] = useState(justConnected ? 'Gmail connected successfully.' : '');
   const [showMetrics, setShowMetrics] = useState(false);
 
   const now = new Date();
@@ -77,7 +101,7 @@ export default function MorningDispatch() {
     }
   };
 
-  const handleAction = async (draftId: string, action: 'send' | 'edit' | 'skip' | 'defer', editedBody?: string) => {
+  const handleAction = async (draftId: string, action: 'send' | 'edit' | 'skip' | 'defer' | 'mute_sender' | 'not_important', editedBody?: string) => {
     try {
       const response = await fetch('/api/correspondent/action', {
         method: 'POST',
@@ -88,6 +112,8 @@ export default function MorningDispatch() {
         if (action === 'send') setStatusMessage('Message sent. Voice model updated.');
         else if (action === 'skip') setStatusMessage('Skipped — will return tomorrow.');
         else if (action === 'defer') setStatusMessage('Archived.');
+        else if (action === 'mute_sender') setStatusMessage('Sender muted. Future messages will be auto-archived.');
+        else if (action === 'not_important') setStatusMessage('Marked not important. Triage adjusted.');
         await fetchData();
         setTimeout(() => setStatusMessage(''), 3000);
       }
@@ -97,25 +123,65 @@ export default function MorningDispatch() {
     }
   };
 
-  const runPipeline = async () => {
+  const [pipelineStage, setPipelineStage] = useState('');
+  const [reprocessFlag, setReprocessFlag] = useState(false);
+
+  const runPipeline = async (forceReprocess = false) => {
+    const shouldReprocess = forceReprocess || reprocessFlag;
+    setReprocessFlag(false);
     setIsProcessing(true);
-    setStatusMessage('Running Correspondent pipeline...');
+    setStatusMessage('');
+    setPipelineStage('Connecting to Gmail...');
+
+    // Simulate stage progression while waiting for the API
+    const stages = [
+      { text: 'Connecting to Gmail...', delay: 0 },
+      { text: 'Fetching new messages...', delay: 2000 },
+      { text: 'Identifying senders...', delay: 5000 },
+      { text: 'Triaging messages...', delay: 8000 },
+      { text: 'Drafting replies in your voice...', delay: 12000 },
+      { text: 'Building your dispatch...', delay: 18000 },
+    ];
+
+    const timers = stages.map(({ text, delay }) =>
+      setTimeout(() => setPipelineStage(text), delay)
+    );
+
     try {
-      const response = await fetch('/api/correspondent/process', { method: 'POST' });
+      const response = await fetch('/api/correspondent/process', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reprocess: shouldReprocess }),
+      });
+      timers.forEach(clearTimeout);
+      setPipelineStage('');
+
       if (response.ok) {
         const result = await response.json();
-        setStatusMessage(`Pipeline complete: ${result.messages_ingested} ingested, ${result.drafts_generated} drafted.`);
+        if (result.reprocessed) {
+          setStatusMessage(`Re-triaged all messages with improved scoring. ${result.drafts_generated} draft${result.drafts_generated !== 1 ? 's' : ''} prepared.`);
+        } else if (result.messages_ingested > 0) {
+          setStatusMessage(`${result.messages_ingested} new message${result.messages_ingested !== 1 ? 's' : ''} found, ${result.drafts_generated} draft${result.drafts_generated !== 1 ? 's' : ''} prepared.`);
+        } else {
+          const debugMsg = result.debug ? ` (${result.debug})` : '';
+          setStatusMessage(`No new messages found.${debugMsg}`);
+        }
         await fetchData();
       } else {
         setStatusMessage('Pipeline failed. Check logs.');
       }
     } catch (error) {
-      setStatusMessage('Pipeline error.');
+      timers.forEach(clearTimeout);
+      setPipelineStage('');
+      setStatusMessage('Pipeline error. Please try again.');
     } finally {
       setIsProcessing(false);
-      setTimeout(() => setStatusMessage(''), 5000);
+      setTimeout(() => setStatusMessage(''), 8000);
     }
   };
+
+  const gmailConnected = config?.gmail_connected || justConnected;
+  const editRatePct = metrics ? Math.round((1 - metrics.edit_rate) * 100) : null;
 
   if (isLoading) {
     return (
@@ -124,9 +190,6 @@ export default function MorningDispatch() {
       </div>
     );
   }
-
-  const gmailConnected = config?.gmail_connected;
-  const editRatePct = metrics ? Math.round((1 - metrics.edit_rate) * 100) : null;
 
   return (
     <div className="min-h-screen bg-paper">
@@ -144,14 +207,28 @@ export default function MorningDispatch() {
             {formatTime(now)}
           </div>
           <p className="font-serif text-[19px] font-light italic text-accent mt-6 leading-relaxed max-w-[480px] mx-auto">
-            {getGreeting()} {queue?.pending ? `You have ${queue.pending} message${queue.pending !== 1 ? 's' : ''} waiting.` : 'Your correspondence is settled.'}
+            {getGreeting()} {getSubGreeting(queue?.pending || 0, queue?.last_run, gmailConnected)}
           </p>
           <div className="absolute bottom-0 left-0 right-0 h-px bg-border" />
           <div className="absolute bottom-0 left-1/2 -translate-x-1/2 translate-y-1/2 px-4 bg-paper text-[8px] tracking-[6px] text-border">&#9670;</div>
         </header>
 
+        {/* Pipeline loading */}
+        {isProcessing && pipelineStage && (
+          <div className="bg-sage-bg/60 border-l-[3px] border-sage px-5 py-4 mb-8">
+            <div className="flex items-center gap-3">
+              <div className="flex gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-sage animate-pulse" />
+                <span className="w-1.5 h-1.5 rounded-full bg-sage animate-pulse [animation-delay:200ms]" />
+                <span className="w-1.5 h-1.5 rounded-full bg-sage animate-pulse [animation-delay:400ms]" />
+              </div>
+              <div className="text-[13px] text-ink italic font-serif">{pipelineStage}</div>
+            </div>
+          </div>
+        )}
+
         {/* Status */}
-        {statusMessage && (
+        {statusMessage && !isProcessing && (
           <div className="bg-sage-bg border-l-[3px] border-sage px-5 py-4 mb-8">
             <div className="text-[13.5px] leading-relaxed text-ink">{statusMessage}</div>
           </div>
@@ -171,8 +248,11 @@ export default function MorningDispatch() {
         {/* Controls */}
         {gmailConnected && (
           <div className="flex items-center gap-3 mb-8 flex-wrap">
-            <button onClick={runPipeline} disabled={isProcessing} className="px-4 py-1.5 bg-sage text-white text-[11px] font-medium disabled:opacity-50">
+            <button onClick={() => runPipeline(false)} disabled={isProcessing} className="px-4 py-1.5 bg-sage text-white text-[11px] font-medium disabled:opacity-50">
               {isProcessing ? 'Processing...' : 'Fetch New Mail'}
+            </button>
+            <button onClick={() => runPipeline(true)} disabled={isProcessing} className="px-4 py-1.5 border border-sage text-sage text-[11px] font-medium disabled:opacity-50 hover:bg-sage-bg transition-colors">
+              Re-triage All
             </button>
             <Link href="/people" className="px-4 py-1.5 border border-border text-[11px] text-muted hover:text-ink transition-colors">
               People Database

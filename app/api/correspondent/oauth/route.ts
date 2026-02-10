@@ -69,15 +69,55 @@ export async function GET(request: NextRequest) {
     const userId = process.env.DEFAULT_USER_ID || 'placeholder-user-id';
     const expiry = new Date(Date.now() + tokens.expires_in * 1000).toISOString();
 
-    // Upsert config with tokens
+    // Ensure the user exists in auth.users (FK constraint requires it)
+    const { data: authUser } = await supabaseAdmin.auth.admin.getUserById(userId);
+    if (!authUser?.user) {
+      const { error: createUserErr } = await supabaseAdmin.auth.admin.createUser({
+        id: userId,
+        email: `user-${userId.slice(0, 8)}@edgelands.local`,
+        email_confirm: true,
+      });
+      if (createUserErr) {
+        console.error('Failed to create auth user:', createUserErr);
+        // Try to continue anyway — maybe the table FK references something else
+      }
+    }
+
+    // Upsert config with tokens — also check for any orphaned rows with wrong user_id
     const { data: existing } = await supabaseAdmin
       .from('correspondent_config')
       .select('user_id')
       .eq('user_id', userId)
-      .single();
+      .maybeSingle();
+
+    if (!existing) {
+      // Check if there's an orphaned row (e.g. created with 'placeholder-user-id')
+      const { data: orphaned } = await supabaseAdmin
+        .from('correspondent_config')
+        .select('user_id')
+        .neq('user_id', userId)
+        .limit(1)
+        .maybeSingle();
+
+      if (orphaned) {
+        // Adopt the orphaned row by updating its user_id
+        await supabaseAdmin
+          .from('correspondent_config')
+          .update({
+            user_id: userId,
+            gmail_access_token: tokens.access_token,
+            gmail_refresh_token: tokens.refresh_token || undefined,
+            gmail_token_expiry: expiry,
+            gmail_connected: true,
+          })
+          .eq('user_id', orphaned.user_id);
+
+        return NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}/?connected=true`);
+      }
+    }
 
     if (existing) {
-      await supabaseAdmin
+      const { error: updateErr } = await supabaseAdmin
         .from('correspondent_config')
         .update({
           gmail_access_token: tokens.access_token,
@@ -86,8 +126,18 @@ export async function GET(request: NextRequest) {
           gmail_connected: true,
         })
         .eq('user_id', userId);
+
+      if (updateErr) {
+        console.error('OAuth config update failed:', updateErr);
+        return NextResponse.json({
+          error: 'Failed to update config',
+          details: updateErr.message,
+          code: updateErr.code,
+          hint: updateErr.hint,
+        }, { status: 500 });
+      }
     } else {
-      await supabaseAdmin
+      const { error: insertErr } = await supabaseAdmin
         .from('correspondent_config')
         .insert({
           user_id: userId,
@@ -96,10 +146,21 @@ export async function GET(request: NextRequest) {
           gmail_token_expiry: expiry,
           gmail_connected: true,
         });
+
+      if (insertErr) {
+        console.error('OAuth config insert failed:', insertErr);
+        return NextResponse.json({
+          error: 'Failed to save Gmail config',
+          details: insertErr.message,
+          code: insertErr.code,
+          hint: insertErr.hint,
+          user_id: userId,
+        }, { status: 500 });
+      }
     }
 
-    // Redirect to correspondent page
-    return NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}/correspondent?connected=true`);
+    // Redirect to home page (Morning Dispatch panel)
+    return NextResponse.redirect(`${process.env.NEXT_PUBLIC_APP_URL}/?connected=true`);
   } catch (error) {
     console.error('OAuth error:', error);
     return NextResponse.json(

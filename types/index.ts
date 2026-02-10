@@ -381,7 +381,7 @@ export interface CorrespondentQueueResponse {
 
 export interface DraftActionRequest {
   draft_id: string;
-  action: 'send' | 'edit' | 'skip' | 'defer';
+  action: 'send' | 'edit' | 'skip' | 'defer' | 'mute_sender' | 'not_important';
   edited_body?: string;
 }
 
@@ -649,4 +649,35 @@ export interface MonthlyPattern {
     deferredThisMonth: number;
   };
   recommendations: string[];
+}
+
+// ============================================================
+// Evening Debrief Types
+// ============================================================
+
+export type DebriefCategory = 'land' | 'garden' | 'people' | 'insights' | 'work' | 'body' | 'creative';
+
+export interface DebriefEntry {
+  id: string;
+  user_id: string;
+  date: string;
+  raw_entry: string;
+  categories: DebriefCategoryItem[];
+  energy_reading: EnergyReading;
+  chronicler_note?: string;
+  created_at: string;
+}
+
+export interface DebriefCategoryItem {
+  category: DebriefCategory;
+  items: string[];
+}
+
+export interface EnergyReading {
+  colleagues_pct: number;
+  airbnb_pct: number;
+  forest_pct: number;
+  personal_pct: number;
+  other_pct: number;
+  narrative: string;
 }

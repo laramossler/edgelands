@@ -42,20 +42,72 @@ function getAnthropic() {
 // Stage 1: INGEST
 // ============================================================
 
+/** Detect no-reply / automated sender patterns */
+function isAutomatedSender(email: string): boolean {
+  if (!email) return false;
+  const lower = email.toLowerCase();
+
+  // Check for noreply/no-reply anywhere in the local part (catches cloudplatform-noreply@, security-noreply@, etc.)
+  const localPart = lower.split('@')[0];
+  if (/noreply|no-reply|donotreply|do-not-reply/.test(localPart)) return true;
+
+  // Common automated sender prefixes
+  const automatedPrefixes = [
+    'notifications@', 'notification@', 'notify@',
+    'newsletter@', 'news@', 'updates@', 'update@',
+    'marketing@', 'promo@', 'promotions@',
+    'mailer@', 'mailer-daemon@', 'postmaster@',
+    'billing@', 'receipts@', 'receipt@',
+    'events@', 'contact@', 'messages+',
+    'customer_success@', 'customerservice@',
+  ];
+  if (automatedPrefixes.some(p => lower.startsWith(p))) return true;
+
+  // Common automated domains
+  const autoDomains = [
+    'vercel.com', 'github.com', 'gitlab.com', 'bitbucket.org',
+    'netlify.com', 'heroku.com', 'aws.amazon.com',
+    'googleusercontent.com', 'google.com',
+    'facebookmail.com', 'linkedin.com',
+    'shopify.com', 'stripe.com', 'paypal.com',
+    'squarespace.com', 'squaremktg.com', 'amazon.com',
+    'capitalone.com', 'uber.com', 'etsy.com',
+    'garmin.com', 'dreamstime.com',
+  ];
+  const domain = lower.split('@')[1];
+  if (domain && autoDomains.some(d => domain.endsWith(d))) return true;
+
+  return false;
+}
+
 /** Pull all new messages from connected channels and store them */
-async function ingest(userId: string): Promise<number> {
+async function ingest(userId: string): Promise<{ ingested: number; debug: string }> {
   let ingested = 0;
+  const debugInfo: string[] = [];
 
   // --- Email Channel ---
-  const { data: config } = await supabaseAdmin
+  const { data: config, error: configError } = await supabaseAdmin
     .from('correspondent_config')
     .select('gmail_connected, excluded_emails')
     .eq('user_id', userId)
-    .single();
+    .maybeSingle();
 
-  if (config?.gmail_connected) {
-    const emails = await fetchNewEmails(userId);
-    const excludedEmails = new Set((config.excluded_emails || []).map((e: string) => e.toLowerCase()));
+  if (configError) {
+    debugInfo.push(`Config error: ${configError.message}`);
+    return { ingested: 0, debug: debugInfo.join('; ') };
+  }
+
+  if (!config?.gmail_connected) {
+    debugInfo.push('Gmail not connected');
+    return { ingested: 0, debug: debugInfo.join('; ') };
+  }
+
+  debugInfo.push('Gmail connected, fetching emails...');
+
+  const emails = await fetchNewEmails(userId);
+  debugInfo.push(`Fetched ${emails.length} emails from Gmail API`);
+
+  const excludedEmails = new Set((config.excluded_emails || []).map((e: string) => e.toLowerCase()));
 
     for (const email of emails) {
       // Skip excluded senders
@@ -71,6 +123,38 @@ async function ingest(userId: string): Promise<number> {
 
       if (existing && existing.length > 0) continue;
 
+      // Add synthetic labels for triage signals
+      const labels = [...email.labels];
+      const senderIsAutomated = isAutomatedSender(email.sender_email);
+      if (email.is_list_email || senderIsAutomated) labels.push('_LIST');
+      if (email.is_reply) labels.push('_REPLY');
+      if (!email.is_list_email && !senderIsAutomated && email.recipient_count <= 2) labels.push('_DIRECT');
+      if (email.cc_recipients.length > 5) labels.push('_BULK_CC');
+
+      // Check if user previously sent in this thread (reply to user's own message)
+      if (email.thread_id) {
+        const { data: sentInThread } = await supabaseAdmin
+          .from('correspondent_drafts')
+          .select('id')
+          .eq('user_id', userId)
+          .eq('status', 'sent')
+          .limit(1);
+
+        if (sentInThread && sentInThread.length > 0) {
+          // Check if any of those drafts belong to a message in the same thread
+          const { data: threadMatch } = await supabaseAdmin
+            .from('correspondent_messages')
+            .select('id')
+            .eq('thread_id', email.thread_id)
+            .eq('user_id', userId)
+            .limit(1);
+
+          if (threadMatch && threadMatch.length > 0) {
+            labels.push('_USER_THREAD');
+          }
+        }
+      }
+
       const { error } = await supabaseAdmin.from('correspondent_messages').insert({
         user_id: userId,
         channel: 'email',
@@ -82,19 +166,20 @@ async function ingest(userId: string): Promise<number> {
         body: email.body,
         body_html: email.body_html,
         snippet: email.snippet,
-        labels: email.labels,
+        labels,
         received_at: email.received_at,
         attachments: email.attachments.length > 0 ? email.attachments : null,
         processed: false,
       });
 
-      if (!error) ingested++;
+      if (error) {
+        debugInfo.push(`Insert error: ${error.message}`);
+      } else {
+        ingested++;
+      }
     }
-  }
 
-  // Future: SMS, Slack, etc. would be added here
-
-  return ingested;
+  return { ingested, debug: debugInfo.join('; ') };
 }
 
 // ============================================================
@@ -141,6 +226,35 @@ async function identify(userId: string): Promise<void> {
 
 /** Score each unprocessed message on urgency and importance */
 async function triage(userId: string): Promise<void> {
+  // First: batch-update all _LIST messages in one query (no API calls needed)
+  // We use a Postgres array contains check via the labels column
+  const { data: listMessages } = await supabaseAdmin
+    .from('correspondent_messages')
+    .select('id, labels')
+    .eq('user_id', userId)
+    .eq('processed', false);
+
+  if (listMessages && listMessages.length > 0) {
+    const listIds = listMessages
+      .filter(m => (m.labels || []).includes('_LIST'))
+      .map(m => m.id);
+
+    if (listIds.length > 0) {
+      // Batch update all _LIST messages at once
+      await supabaseAdmin
+        .from('correspondent_messages')
+        .update({
+          urgency: 0,
+          importance: 0,
+          triage_summary: 'Automated/list email — skipped',
+          processed: true,
+        })
+        .eq('user_id', userId)
+        .in('id', listIds);
+    }
+  }
+
+  // Now fetch only non-LIST unprocessed messages for Claude triage
   const { data: unprocessed } = await supabaseAdmin
     .from('correspondent_messages')
     .select('*, people:person_id(*)')
@@ -149,8 +263,18 @@ async function triage(userId: string): Promise<void> {
 
   if (!unprocessed || unprocessed.length === 0) return;
 
-  // Build triage context for Claude
-  for (const message of unprocessed) {
+  // Sort: _DIRECT+_REPLY first, then _DIRECT, then _REPLY, then everything else
+  const priority = (msg: any) => {
+    const labels: string[] = msg.labels || [];
+    if (labels.includes('_DIRECT') && labels.includes('_REPLY')) return 0;
+    if (labels.includes('_DIRECT')) return 1;
+    if (labels.includes('_REPLY')) return 2;
+    if (labels.includes('_BULK_CC')) return 80;
+    return 50;
+  };
+  const sorted = [...unprocessed].sort((a, b) => priority(a) - priority(b));
+
+  for (const message of sorted) {
     const person = message.people as Person | null;
 
     const triagePrompt = buildTriagePrompt(message, person);
@@ -191,15 +315,32 @@ async function triage(userId: string): Promise<void> {
 }
 
 function buildTriagePrompt(message: CorrespondentMessage, person: Person | null): string {
-  let prompt = `You are triaging an inbound message for the Correspondent agent. Score it on two axes:
+  const labels = message.labels || [];
+
+  // Check both synthetic labels AND sender patterns (for reprocessed messages)
+  const senderAuto = isAutomatedSender(message.sender_email || '');
+  const isDirect = labels.includes('_DIRECT') || (!senderAuto && !labels.includes('_LIST'));
+  const isReply = labels.includes('_REPLY') || (message.subject && /^(re|fwd|fw):/i.test(message.subject));
+  const isUserThread = labels.includes('_USER_THREAD');
+  const isList = labels.includes('_LIST') || senderAuto;
+  const isBulkCC = labels.includes('_BULK_CC');
+
+  let prompt = `You are triaging an inbound message for the Correspondent agent. The user values personal, relational correspondence highly — even from unknown senders. Score on two axes:
 - Urgency (0-10): Does this need a response soon? Look for deadlines, time-sensitive language, blocking decisions.
-- Importance (0-10): Does this matter? Consider relationship closeness, emotional content, financial/legal implications.
+- Importance (0-10): Does this matter? Consider: personal/emotional content, direct communication (not mass email), replies to conversations the user started, relationship depth, financial/legal implications.
+
+IMPORTANT scoring guidance:
+- A heartfelt personal email from anyone (known or unknown) should score HIGH importance (7-10)
+- A direct email to just the user (not a mailing list or mass CC) should get an importance boost
+- A reply to something the user previously sent should score HIGH importance (the person is responding to THEM)
+- Automated notifications, newsletters, marketing, and build alerts should score LOW (0-3)
+- Mass CC'd emails are lower importance unless the content specifically addresses the user
 
 Also determine the appropriate draft tier:
-- "full_draft": Substantive, personalized reply needed
+- "full_draft": Substantive, personalized reply needed (personal emails, important requests)
 - "quick_reply": Simple acknowledgment or short answer
 - "batched_reply": Similar to other messages (e.g., course inquiries)
-- "no_reply": Newsletters, automated notifications, marketing
+- "no_reply": Newsletters, automated notifications, marketing, build alerts
 
 Message details:
 Channel: ${message.channel}
@@ -208,6 +349,22 @@ Subject: ${message.subject || '(none)'}
 Snippet: ${message.snippet || message.body.substring(0, 300)}
 
 `;
+
+  // Add delivery context signals
+  const signals: string[] = [];
+  if (isDirect) signals.push('DIRECT EMAIL — sent specifically to the user (not a mass email or mailing list)');
+  if (isReply) signals.push('REPLY — this is a reply in a conversation thread');
+  if (isUserThread) signals.push('USER THREAD — the user has previously sent messages in this thread (someone is replying to them)');
+  if (isList) signals.push('MAILING LIST — sent via a mailing list or newsletter');
+  if (isBulkCC) signals.push('BULK CC — sent to many recipients');
+
+  if (signals.length > 0) {
+    prompt += `Delivery signals:\n`;
+    for (const s of signals) {
+      prompt += `- ${s}\n`;
+    }
+    prompt += '\n';
+  }
 
   if (person) {
     prompt += `Sender is known:
@@ -218,7 +375,7 @@ Snippet: ${message.snippet || message.body.substring(0, 300)}
 `;
     if (person.care_notes) prompt += `- Current context: ${person.care_notes}\n`;
   } else {
-    prompt += `Sender is NOT in the People Database (unknown contact).\n`;
+    prompt += `Sender is NOT yet in the People Database — but this does NOT mean they're unimportant. Judge by the content and delivery signals above.\n`;
   }
 
   prompt += `
@@ -334,15 +491,33 @@ async function draft(userId: string): Promise<number> {
 function determineDraftTier(message: any): DraftTier {
   const urgency = message.urgency || 0;
   const importance = message.importance || 0;
-  const combined = urgency + importance;
+  let combined = urgency + importance;
+
+  const labels = message.labels || [];
+  const senderAuto = isAutomatedSender(message.sender_email || '');
+
+  // Boost signals — check both synthetic labels AND sender patterns
+  const isDirect = labels.includes('_DIRECT') || (!senderAuto && !labels.includes('_LIST'));
+  const isReply = labels.includes('_REPLY') || (message.subject && /^(re|fwd|fw):/i.test(message.subject));
+  const isUserThread = labels.includes('_USER_THREAD');
+  const isList = labels.includes('_LIST') || senderAuto;
+
+  // Direct personal email gets a boost
+  if (isDirect && !isList) combined += 2;
+  // Reply to user's own thread gets a strong boost
+  if (isUserThread) combined += 3;
+  // Any reply gets a small boost
+  else if (isReply) combined += 1;
 
   // Check for no-reply signals
-  const labels = message.labels || [];
   const isAutomated = labels.includes('CATEGORY_UPDATES') ||
     labels.includes('CATEGORY_PROMOTIONS') ||
     labels.includes('CATEGORY_SOCIAL');
 
+  // Mailing lists and automated messages need higher bar
+  if (isList && combined < 10) return 'no_reply';
   if (isAutomated && combined < 8) return 'no_reply';
+
   if (combined >= 12) return 'full_draft';
   if (combined >= 6) return 'quick_reply';
   if (combined < 4) return 'no_reply';
@@ -589,7 +764,7 @@ export async function getQueue(userId: string) {
     .eq('user_id', userId)
     .order('started_at', { ascending: false })
     .limit(1)
-    .single();
+    .maybeSingle();
 
   return {
     items,
@@ -610,7 +785,7 @@ export async function approveDraft(userId: string, draftId: string): Promise<boo
     .select('*, correspondent_messages!inner(*), people:person_id(*)')
     .eq('id', draftId)
     .eq('user_id', userId)
-    .single();
+    .maybeSingle();
 
   if (!draft) return false;
 
@@ -696,7 +871,7 @@ export async function skipDraft(userId: string, draftId: string): Promise<boolea
     .select('skip_count')
     .eq('id', draftId)
     .eq('user_id', userId)
-    .single();
+    .maybeSingle();
 
   if (!draft) return false;
 
@@ -741,11 +916,105 @@ async function requeueSkipped(userId: string): Promise<void> {
 }
 
 // ============================================================
+// REPROCESS (retroactively fix labels and re-triage)
+// ============================================================
+
+/** Retroactively add synthetic labels to existing messages and re-triage them */
+async function reprocessExisting(userId: string): Promise<number> {
+  // Delete ALL existing drafts for this user in one query
+  await supabaseAdmin
+    .from('correspondent_drafts')
+    .delete()
+    .eq('user_id', userId);
+
+  // Get ALL messages for this user
+  const { data: messages } = await supabaseAdmin
+    .from('correspondent_messages')
+    .select('id, sender_email, labels, thread_id, subject')
+    .eq('user_id', userId);
+
+  if (!messages || messages.length === 0) return 0;
+
+  // Build thread count map for _USER_THREAD detection
+  const threadCounts = new Map<string, number>();
+  for (const msg of messages) {
+    if (msg.thread_id) {
+      threadCounts.set(msg.thread_id, (threadCounts.get(msg.thread_id) || 0) + 1);
+    }
+  }
+
+  // Classify messages into _LIST and _DIRECT groups
+  const listIds: string[] = [];
+  const directIds: string[] = [];
+  const replyIds: string[] = [];
+  const threadIds: string[] = [];
+
+  for (const msg of messages) {
+    const existingLabels: string[] = msg.labels || [];
+    const gmailLabels = existingLabels.filter(l => !l.startsWith('_'));
+
+    const senderIsAutomated = isAutomatedSender(msg.sender_email || '');
+    const isGmailAutomated = gmailLabels.includes('CATEGORY_UPDATES') ||
+      gmailLabels.includes('CATEGORY_PROMOTIONS') ||
+      gmailLabels.includes('CATEGORY_SOCIAL');
+
+    if (senderIsAutomated || isGmailAutomated) {
+      listIds.push(msg.id);
+    } else {
+      directIds.push(msg.id);
+    }
+
+    if (msg.subject && /^(re|fwd|fw):/i.test(msg.subject)) {
+      replyIds.push(msg.id);
+    }
+
+    if (msg.thread_id && (threadCounts.get(msg.thread_id) || 0) > 1) {
+      threadIds.push(msg.id);
+    }
+  }
+
+  // Batch reset ALL messages in one query
+  await supabaseAdmin
+    .from('correspondent_messages')
+    .update({
+      processed: false,
+      urgency: 0,
+      importance: 0,
+      triage_summary: null,
+    })
+    .eq('user_id', userId);
+
+  // For _LIST messages: mark as processed immediately (skip triage)
+  if (listIds.length > 0) {
+    // Supabase .in() has a limit, chunk if needed
+    for (let i = 0; i < listIds.length; i += 50) {
+      const chunk = listIds.slice(i, i + 50);
+      await supabaseAdmin
+        .from('correspondent_messages')
+        .update({
+          urgency: 0,
+          importance: 0,
+          triage_summary: 'Automated/list email — skipped',
+          processed: true,
+        })
+        .in('id', chunk);
+    }
+  }
+
+  // For the _DIRECT messages that remain: just leave them as processed=false
+  // so triage picks them up. The labels don't need updating since triage
+  // now checks sender patterns directly via buildTriagePrompt.
+  // We only need to ensure they're not processed yet (already done above).
+
+  return directIds.length;
+}
+
+// ============================================================
 // MAIN PIPELINE
 // ============================================================
 
 /** Run the full Correspondent processing pipeline */
-export async function runPipeline(userId: string): Promise<CorrespondentRun> {
+export async function runPipeline(userId: string, reprocess = false): Promise<CorrespondentRun> {
   // Create run record
   const { data: run } = await supabaseAdmin
     .from('correspondent_runs')
@@ -755,7 +1024,7 @@ export async function runPipeline(userId: string): Promise<CorrespondentRun> {
       started_at: new Date().toISOString(),
     })
     .select()
-    .single();
+    .maybeSingle();
 
   const runId = run?.id;
 
@@ -763,8 +1032,16 @@ export async function runPipeline(userId: string): Promise<CorrespondentRun> {
     // Re-queue any skipped drafts from yesterday
     await requeueSkipped(userId);
 
+    // Reprocess existing messages if requested (retroactive label fix)
+    if (reprocess) {
+      const reprocessed = await reprocessExisting(userId);
+      console.log(`[Correspondent] Reprocessed ${reprocessed} existing messages with new triage signals`);
+    }
+
     // Stage 1: Ingest
-    const messagesIngested = await ingest(userId);
+    const ingestResult = await ingest(userId);
+    const messagesIngested = ingestResult.ingested;
+    console.log('[Correspondent] Ingest:', ingestResult.debug);
 
     // Stage 2: Identify
     await identify(userId);
@@ -783,12 +1060,13 @@ export async function runPipeline(userId: string): Promise<CorrespondentRun> {
       .eq('processed', true);
 
     // Update run record
-    const completedRun: Partial<CorrespondentRun> = {
+    const completedRun: Partial<CorrespondentRun> & { debug?: string } = {
       completed_at: new Date().toISOString(),
       status: 'completed',
       messages_ingested: messagesIngested,
       messages_processed: messagesProcessed || 0,
       drafts_generated: draftsGenerated,
+      debug: ingestResult.debug,
     };
 
     if (runId) {
@@ -838,7 +1116,7 @@ export async function checkEmergencyAlerts(userId: string): Promise<Corresponden
     .from('correspondent_config')
     .select('emergency_alerts_enabled, emergency_closeness_threshold')
     .eq('user_id', userId)
-    .single();
+    .maybeSingle();
 
   if (!config?.emergency_alerts_enabled) return [];
 

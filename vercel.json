@@ -1,4 +1,12 @@
 {
+  "functions": {
+    "app/api/correspondent/process/route.ts": {
+      "maxDuration": 300
+    },
+    "app/api/people/auto-populate/route.ts": {
+      "maxDuration": 300
+    }
+  },
   "crons": [
     {
       "path": "/api/notifications?task=sunday_ops_review",

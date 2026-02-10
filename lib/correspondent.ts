@@ -316,10 +316,13 @@ async function triage(userId: string): Promise<void> {
 
 function buildTriagePrompt(message: CorrespondentMessage, person: Person | null): string {
   const labels = message.labels || [];
-  const isDirect = labels.includes('_DIRECT');
-  const isReply = labels.includes('_REPLY');
+
+  // Check both synthetic labels AND sender patterns (for reprocessed messages)
+  const senderAuto = isAutomatedSender(message.sender_email || '');
+  const isDirect = labels.includes('_DIRECT') || (!senderAuto && !labels.includes('_LIST'));
+  const isReply = labels.includes('_REPLY') || (message.subject && /^(re|fwd|fw):/i.test(message.subject));
   const isUserThread = labels.includes('_USER_THREAD');
-  const isList = labels.includes('_LIST');
+  const isList = labels.includes('_LIST') || senderAuto;
   const isBulkCC = labels.includes('_BULK_CC');
 
   let prompt = `You are triaging an inbound message for the Correspondent agent. The user values personal, relational correspondence highly — even from unknown senders. Score on two axes:
@@ -491,12 +494,13 @@ function determineDraftTier(message: any): DraftTier {
   let combined = urgency + importance;
 
   const labels = message.labels || [];
+  const senderAuto = isAutomatedSender(message.sender_email || '');
 
-  // Boost signals — direct emails and replies are more likely to need a response
-  const isDirect = labels.includes('_DIRECT');
-  const isReply = labels.includes('_REPLY');
+  // Boost signals — check both synthetic labels AND sender patterns
+  const isDirect = labels.includes('_DIRECT') || (!senderAuto && !labels.includes('_LIST'));
+  const isReply = labels.includes('_REPLY') || (message.subject && /^(re|fwd|fw):/i.test(message.subject));
   const isUserThread = labels.includes('_USER_THREAD');
-  const isList = labels.includes('_LIST');
+  const isList = labels.includes('_LIST') || senderAuto;
 
   // Direct personal email gets a boost
   if (isDirect && !isList) combined += 2;
@@ -931,7 +935,7 @@ async function reprocessExisting(userId: string): Promise<number> {
 
   if (!messages || messages.length === 0) return 0;
 
-  // Build a set of thread_ids that have multiple messages (for _USER_THREAD detection)
+  // Build thread count map for _USER_THREAD detection
   const threadCounts = new Map<string, number>();
   for (const msg of messages) {
     if (msg.thread_id) {
@@ -939,12 +943,15 @@ async function reprocessExisting(userId: string): Promise<number> {
     }
   }
 
-  // Compute new labels for each message
-  const updates: { id: string; labels: string[] }[] = [];
+  // Classify messages into _LIST and _DIRECT groups
+  const listIds: string[] = [];
+  const directIds: string[] = [];
+  const replyIds: string[] = [];
+  const threadIds: string[] = [];
+
   for (const msg of messages) {
     const existingLabels: string[] = msg.labels || [];
     const gmailLabels = existingLabels.filter(l => !l.startsWith('_'));
-    const labels = [...gmailLabels];
 
     const senderIsAutomated = isAutomatedSender(msg.sender_email || '');
     const isGmailAutomated = gmailLabels.includes('CATEGORY_UPDATES') ||
@@ -952,23 +959,21 @@ async function reprocessExisting(userId: string): Promise<number> {
       gmailLabels.includes('CATEGORY_SOCIAL');
 
     if (senderIsAutomated || isGmailAutomated) {
-      labels.push('_LIST');
+      listIds.push(msg.id);
     } else {
-      labels.push('_DIRECT');
+      directIds.push(msg.id);
     }
 
     if (msg.subject && /^(re|fwd|fw):/i.test(msg.subject)) {
-      labels.push('_REPLY');
+      replyIds.push(msg.id);
     }
 
     if (msg.thread_id && (threadCounts.get(msg.thread_id) || 0) > 1) {
-      labels.push('_USER_THREAD');
+      threadIds.push(msg.id);
     }
-
-    updates.push({ id: msg.id, labels });
   }
 
-  // Batch reset: mark all messages as unprocessed in one query
+  // Batch reset ALL messages in one query
   await supabaseAdmin
     .from('correspondent_messages')
     .update({
@@ -979,15 +984,29 @@ async function reprocessExisting(userId: string): Promise<number> {
     })
     .eq('user_id', userId);
 
-  // Update labels individually (need different labels per message, but much fewer total queries now)
-  for (const u of updates) {
-    await supabaseAdmin
-      .from('correspondent_messages')
-      .update({ labels: u.labels })
-      .eq('id', u.id);
+  // For _LIST messages: mark as processed immediately (skip triage)
+  if (listIds.length > 0) {
+    // Supabase .in() has a limit, chunk if needed
+    for (let i = 0; i < listIds.length; i += 50) {
+      const chunk = listIds.slice(i, i + 50);
+      await supabaseAdmin
+        .from('correspondent_messages')
+        .update({
+          urgency: 0,
+          importance: 0,
+          triage_summary: 'Automated/list email — skipped',
+          processed: true,
+        })
+        .in('id', chunk);
+    }
   }
 
-  return updates.length;
+  // For the _DIRECT messages that remain: just leave them as processed=false
+  // so triage picks them up. The labels don't need updating since triage
+  // now checks sender patterns directly via buildTriagePrompt.
+  // We only need to ensure they're not processed yet (already done above).
+
+  return directIds.length;
 }
 
 // ============================================================

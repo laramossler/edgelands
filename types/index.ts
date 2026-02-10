@@ -404,7 +404,7 @@ export interface DraftResult {
 // Envoy Agent Types
 // ============================================================
 
-export type EnvoyPipeline = 'design_partner' | 'builder' | 'creative' | 'generous';
+export type EnvoyPipeline = 'design_partner' | 'builder' | 'creative' | 'generous' | 'newsletter_growth';
 export type OutreachStatus = 'suggested' | 'approved' | 'sent' | 'responded' | 'skipped' | 'deferred' | 'not_now';
 export type CoffeeChatStatus = 'suggested' | 'outreach_pending' | 'scheduled' | 'completed' | 'cancelled';
 export type OutreachChannel = 'email' | 'intro_request' | 'dm' | 'in_person_followup' | 'handwritten';
@@ -554,6 +554,7 @@ export interface EnvoyConfig {
   coffee_chat_day_preferences?: string[]; // e.g., ["tuesday", "thursday"]
 
   // Newsletter growth
+  newsletter_growth_weekly_target: number; // default 3
   daily_invite_target: number; // default 1
   monthly_cross_promo_target: number; // default 3
 

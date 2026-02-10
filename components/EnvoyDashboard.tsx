@@ -13,6 +13,7 @@ export default function EnvoyDashboard({ report }: EnvoyDashboardProps) {
       case 'builder': return 'text-blue-400';
       case 'creative': return 'text-orange-400';
       case 'generous': return 'text-green-400';
+      case 'newsletter_growth': return 'text-amber-400';
       default: return 'text-muted';
     }
   };
@@ -23,11 +24,12 @@ export default function EnvoyDashboard({ report }: EnvoyDashboardProps) {
       case 'builder': return 'Builders';
       case 'creative': return 'Creative';
       case 'generous': return 'Generous';
+      case 'newsletter_growth': return 'Newsletter Growth';
       default: return pipeline;
     }
   };
 
-  const pipelines: EnvoyPipeline[] = ['design_partner', 'builder', 'creative', 'generous'];
+  const pipelines: EnvoyPipeline[] = ['design_partner', 'builder', 'creative', 'generous', 'newsletter_growth'];
 
   return (
     <div className="space-y-6">

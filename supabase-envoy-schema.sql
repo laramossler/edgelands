@@ -22,7 +22,7 @@ CREATE TABLE envoy_candidates (
 
   -- Pipeline & source
   pipeline TEXT NOT NULL CHECK (pipeline IN (
-    'design_partner', 'builder', 'creative', 'generous'
+    'design_partner', 'builder', 'creative', 'generous', 'newsletter_growth'
   )),
   source_pool TEXT NOT NULL, -- e.g., "airbnb_network", "newsletter_ecosystem"
   source_detail TEXT,
@@ -76,7 +76,7 @@ CREATE TABLE envoy_outreach (
   subject TEXT,
   body TEXT NOT NULL,
   pipeline TEXT NOT NULL CHECK (pipeline IN (
-    'design_partner', 'builder', 'creative', 'generous'
+    'design_partner', 'builder', 'creative', 'generous', 'newsletter_growth'
   )),
 
   -- Context used for generation
@@ -117,7 +117,7 @@ CREATE TABLE envoy_coffee_chats (
 
   -- Pipeline & context
   pipeline TEXT NOT NULL CHECK (pipeline IN (
-    'design_partner', 'builder', 'creative', 'generous'
+    'design_partner', 'builder', 'creative', 'generous', 'newsletter_growth'
   )),
   why_now TEXT,
   suggested_topics TEXT[],
@@ -188,6 +188,7 @@ CREATE TABLE envoy_config (
   coffee_chat_day_preferences TEXT[], -- e.g., ["tuesday", "thursday"]
 
   -- Newsletter growth
+  newsletter_growth_weekly_target INTEGER DEFAULT 3,
   daily_invite_target INTEGER DEFAULT 1,
   monthly_cross_promo_target INTEGER DEFAULT 3,
 

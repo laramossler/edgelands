@@ -45,6 +45,7 @@ export default function EnvoyOutreachQueue({ items, onAction }: EnvoyOutreachQue
       case 'builder': return 'text-blue-400';
       case 'creative': return 'text-orange-400';
       case 'generous': return 'text-green-400';
+      case 'newsletter_growth': return 'text-amber-400';
       default: return 'text-muted';
     }
   };
@@ -55,6 +56,7 @@ export default function EnvoyOutreachQueue({ items, onAction }: EnvoyOutreachQue
       case 'builder': return 'Builder';
       case 'creative': return 'Creative';
       case 'generous': return 'Generous';
+      case 'newsletter_growth': return 'Growth';
       default: return pipeline;
     }
   };
@@ -107,10 +109,15 @@ export default function EnvoyOutreachQueue({ items, onAction }: EnvoyOutreachQue
               </div>
             </div>
 
-            {/* Newsletter invite badge */}
-            {candidate.source_pool === 'newsletter_invite' && (
+            {/* Newsletter growth badge */}
+            {(outreach.pipeline === 'newsletter_growth' || candidate.source_pool === 'newsletter_invite') && (
               <div className="text-xs text-amber-400/80 bg-amber-400/10 border border-amber-400/20 rounded px-2 py-0.5 inline-block">
-                Dispatch Invite
+                {candidate.source_pool === 'cross_promo' && 'Cross-Promo'}
+                {candidate.source_pool === 'guest_feature' && 'Guest Feature'}
+                {candidate.source_pool === 'community_amplifier' && 'Community'}
+                {candidate.source_pool === 'inbound_collab' && 'Inbound Collab'}
+                {candidate.source_pool === 'inbound_growth' && 'Inbound Lead'}
+                {candidate.source_pool === 'newsletter_invite' && 'Dispatch Invite'}
               </div>
             )}
 

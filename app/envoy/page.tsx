@@ -255,12 +255,14 @@ function EnvoyContent() {
                 builder: 'text-blue-400',
                 creative: 'text-orange-400',
                 generous: 'text-green-400',
+                newsletter_growth: 'text-amber-400',
               };
               const labels: Record<string, string> = {
                 design_partner: 'Design Partner',
                 builder: 'Builder',
                 creative: 'Creative',
                 generous: 'Generous',
+                newsletter_growth: 'Growth',
               };
               return (
                 <span key={pipeline} className={colors[pipeline] || 'text-muted'}>

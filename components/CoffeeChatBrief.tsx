@@ -36,6 +36,7 @@ export default function CoffeeChatBrief({ suggestions, onAction }: CoffeeChatBri
       case 'builder': return 'text-blue-400';
       case 'creative': return 'text-orange-400';
       case 'generous': return 'text-green-400';
+      case 'newsletter_growth': return 'text-amber-400';
       default: return 'text-muted';
     }
   };
@@ -46,6 +47,7 @@ export default function CoffeeChatBrief({ suggestions, onAction }: CoffeeChatBri
       case 'builder': return 'Builder';
       case 'creative': return 'Creative';
       case 'generous': return 'Generous';
+      case 'newsletter_growth': return 'Growth';
       default: return pipeline;
     }
   };
